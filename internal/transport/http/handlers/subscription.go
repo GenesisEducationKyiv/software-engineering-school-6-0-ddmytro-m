@@ -9,6 +9,7 @@ import (
 	"github.com/ddmytro-m/github-scanner/internal/api/github"
 	"github.com/ddmytro-m/github-scanner/internal/infra/db"
 	"github.com/ddmytro-m/github-scanner/internal/infra/mq"
+	"github.com/ddmytro-m/github-scanner/internal/metrics"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -63,6 +64,8 @@ type SubscribeRequest struct {
 }
 
 func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
+	metrics.SubscribeAttempts.Inc()
+
 	var req SubscribeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
@@ -131,6 +134,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 
 	if err == nil {
 		if sub.Status == db.StatusActive {
+			metrics.SubscribeConflicts.Inc()
 			c.JSON(http.StatusConflict, gin.H{"message": "Email already subscribed to this repository"})
 			return
 		}
@@ -192,10 +196,13 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 	}
 
+	metrics.SubscribeSuccesses.Inc()
 	c.JSON(http.StatusOK, gin.H{"message": "Confirmation email sent"})
 }
 
 func (h *SubscriptionHandler) Confirm(c *gin.Context) {
+	metrics.ConfirmAttempts.Inc()
+
 	token := c.Param("token")
 	if !isValidToken(token) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or missing token"})
@@ -226,11 +233,14 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 		}
 	}
 
+	metrics.ConfirmSuccesses.Inc()
 	c.Header("X-Api-Token", sub.ApiToken)
 	c.JSON(http.StatusOK, gin.H{"message": "Subscription confirmed successfully"})
 }
 
 func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
+	metrics.UnsubscribeAttempts.Inc()
+
 	confirmToken := c.Param("token")
 	if !isValidToken(confirmToken) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or missing token"})
@@ -265,6 +275,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 		}
 	}
 
+	metrics.UnsubscribeSuccesses.Inc()
 	c.JSON(http.StatusOK, gin.H{"message": "Unsubscribed successfully"})
 }
 
