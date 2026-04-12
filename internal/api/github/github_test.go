@@ -19,7 +19,7 @@ func fakeResponse(status int, body string, headers map[string]string) *http.Resp
 	}
 	w.WriteHeader(status)
 	if body != "" {
-		w.Write([]byte(body))
+		_, _ = w.Write([]byte(body))
 	}
 	return w.Result()
 }
@@ -95,7 +95,7 @@ func TestGet_200_ParsedAndRateLimitsCached(t *testing.T) {
 		}
 		w.Header().Set("ETag", `"etag-v1"`)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":1,"tag_name":"v1.0.0","html_url":"https://github.com/x/y/releases/tag/v1.0.0"}`))
+		_, _ = w.Write([]byte(`{"id":1,"tag_name":"v1.0.0","html_url":"https://github.com/x/y/releases/tag/v1.0.0"}`))
 	})
 
 	resp := get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
@@ -145,7 +145,7 @@ func TestGet_304_ETagSentAndZeroValueReturned(t *testing.T) {
 func TestGet_404_ReturnsAPIError(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"message":"Not Found"}`))
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
 
 	resp := get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
@@ -164,7 +164,7 @@ func TestGet_AuthorizationHeader_SentWhenTokenPresent(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"tag_name":"v1"}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v1"}`))
 	})
 
 	get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
@@ -179,7 +179,7 @@ func TestGet_AuthorizationHeader_OmittedWhenNoToken(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"tag_name":"v1"}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v1"}`))
 	})
 	c.token = ""
 
@@ -225,7 +225,7 @@ func TestGetRepository_200_ParsesData(t *testing.T) {
 			t.Errorf("expected path /repos/owner/repo, got %q", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id":123,"full_name":"owner/repo"}`))
+		_, _ = w.Write([]byte(`{"id":123,"full_name":"owner/repo"}`))
 	})
 
 	resp := c.GetRepository(context.Background(), "owner", "repo", "")
@@ -262,7 +262,7 @@ func TestGetRepository_304_PassesETag(t *testing.T) {
 func TestGetRepository_404_ReturnsAPIError(t *testing.T) {
 	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"message":"Not Found"}`))
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
 
 	resp := c.GetRepository(context.Background(), "owner", "repo", "")

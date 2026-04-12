@@ -73,7 +73,10 @@ func Get() *gorm.DB {
 			panic("failed to connect to database: " + err.Error())
 		}
 
-		db.AutoMigrate(&Repository{}, &Subscription{})
+		err = db.AutoMigrate(&Repository{}, &Subscription{})
+		if err != nil {
+			panic("failed to migrate database: " + err.Error())
+		}
 
 		instance = db
 	})

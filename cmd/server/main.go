@@ -32,7 +32,12 @@ func main() {
 	defer db.Close()
 
 	redisClient := redisDB.Get()
-	defer redisClient.Close()
+	defer func() {
+		err := redisClient.Close()
+		if err != nil {
+			log.Printf("error closing Redis client: %v", err)
+		}
+	}()
 
 	ghClient := github.NewGitHubClient(
 		cfg.GitHub.Token,

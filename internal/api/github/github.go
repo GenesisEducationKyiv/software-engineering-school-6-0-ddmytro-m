@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -131,7 +132,11 @@ func get[T any](ctx context.Context, c *GitHubClient, path []string, etag string
 	if err != nil {
 		return GitHubResponse[T]{Error: &NetworkError{err}}
 	}
-	defer res.Body.Close()
+	defer func() {
+		if cerr := res.Body.Close(); cerr != nil {
+			log.Printf("error closing response body: %v", cerr)
+		}
+	}()
 
 	data, execErr := handler(res)
 

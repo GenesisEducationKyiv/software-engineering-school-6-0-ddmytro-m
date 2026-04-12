@@ -103,12 +103,13 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 
 		err = h.db.Where("github_id = ?", ghRepo.Data.ID).First(&repo).Error
-		if err == nil {
+		switch err {
+		case nil:
 			// repo already exists (renamed/removed)
 			repo.Owner = owner
 			repo.Name = name
 			h.db.Save(&repo)
-		} else if err == gorm.ErrRecordNotFound {
+		case gorm.ErrRecordNotFound:
 			repo = db.Repository{
 				GitHubID: ghRepo.Data.ID,
 				Owner:    owner,
@@ -119,7 +120,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save repository"})
 				return
 			}
-		} else {
+		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 			return
 		}
