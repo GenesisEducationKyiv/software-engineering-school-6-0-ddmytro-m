@@ -18,6 +18,7 @@ Notifier uses Redis MQ to ensure messages are delivered to the clients.
 2. **Redis** is used to cache any requests from GitHub API (except for getting current limits) and to use it's MQ
 3. `/subscriptions` and `/unsubscribe/:token` are protected by API Authorization Token provided in `X-API-TOKEN` header of `/confirm/:token` response.
 4. **GitHub CI** runs tests and lints the code
+5. **Prometheus** metrics
 
 ## Launch
 Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV is development by default).
