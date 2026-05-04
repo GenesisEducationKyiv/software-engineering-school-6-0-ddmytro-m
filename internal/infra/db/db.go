@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/config"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 )
 
 // Release represents the latest release information for a repository.

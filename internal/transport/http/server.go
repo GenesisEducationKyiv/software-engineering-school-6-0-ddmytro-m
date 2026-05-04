@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/transport/http/handlers"
-	"github.com/ddmytro-m/github-scanner/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/handlers"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/middleware"
 )
 
 // Server wraps the http.Server and provides start/stop functionality.

@@ -4,8 +4,9 @@ package redis
 import (
 	"sync"
 
-	"github.com/ddmytro-m/github-scanner/internal/config"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 )
 
 var (

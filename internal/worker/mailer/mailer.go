@@ -11,10 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/infra/mq"
-	redisDB "github.com/ddmytro-m/github-scanner/internal/infra/redis"
-	"github.com/ddmytro-m/github-scanner/internal/infra/smtp"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 )
 
 const (

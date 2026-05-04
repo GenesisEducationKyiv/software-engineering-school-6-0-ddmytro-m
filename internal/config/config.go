@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/utils"
 	"github.com/joho/godotenv"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/utils"
 )
 
 // GithubConfig holds the configuration for the GitHub API client.

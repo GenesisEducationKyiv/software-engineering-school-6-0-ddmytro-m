@@ -5,9 +5,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/ddmytro-m/github-scanner/internal/api/github"
-	"github.com/ddmytro-m/github-scanner/internal/infra/db"
-	redisDB "github.com/ddmytro-m/github-scanner/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 
 	"github.com/redis/go-redis/v9"
 )

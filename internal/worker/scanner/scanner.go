@@ -8,11 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/api/github"
-	"github.com/ddmytro-m/github-scanner/internal/config"
-	"github.com/ddmytro-m/github-scanner/internal/infra/db"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 )
 
 // Scanner periodically checks repositories for updates.

@@ -15,9 +15,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/ddmytro-m/github-scanner/internal/api/github"
-	"github.com/ddmytro-m/github-scanner/internal/config"
-	"github.com/ddmytro-m/github-scanner/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"

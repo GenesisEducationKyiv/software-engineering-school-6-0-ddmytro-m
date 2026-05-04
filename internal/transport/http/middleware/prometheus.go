@@ -5,8 +5,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/metrics"
 	"github.com/gin-gonic/gin"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
 // Prometheus records per-request HTTP metrics.

@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ddmytro-m/github-scanner/internal/api/github"
-	"github.com/ddmytro-m/github-scanner/internal/infra/db"
-	"github.com/ddmytro-m/github-scanner/internal/infra/mq"
-	"github.com/ddmytro-m/github-scanner/internal/metrics"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
 // SubscriptionHandler handles HTTP requests related to subscriptions.
