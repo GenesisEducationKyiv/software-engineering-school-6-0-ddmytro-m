@@ -1,3 +1,4 @@
+// Package utils provides utility functions, including environment variable helpers.
 package utils
 
 import (
@@ -6,6 +7,8 @@ import (
 	"strconv"
 )
 
+// GetEnv retrieves the value of the environment variable named by the key.
+// It returns the fallback string if the variable is not present.
 func GetEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value
@@ -13,6 +16,8 @@ func GetEnv(key, fallback string) string {
 	return fallback
 }
 
+// MustGetEnv retrieves the value of the environment variable named by the key.
+// It logs a fatal error and exits if the variable is not present.
 func MustGetEnv(key string) string {
 	value, ok := os.LookupEnv(key)
 	if !ok {
@@ -21,10 +26,13 @@ func MustGetEnv(key string) string {
 	return value
 }
 
+// Parsable is an interface constraint for types that can be parsed from strings.
 type Parsable interface {
 	int | int64 | float64 | bool | string
 }
 
+// GetEnvAs retrieves the value of the environment variable named by the key and parses it as type T.
+// It returns the fallback value if the variable is not present or if parsing fails.
 func GetEnvAs[T Parsable](key string, fallback T) T {
 	value, ok := os.LookupEnv(key)
 	if !ok {
@@ -54,6 +62,8 @@ func GetEnvAs[T Parsable](key string, fallback T) T {
 	return result.(T)
 }
 
+// MustGetEnvAs retrieves the value of the environment variable named by the key and parses it as type T.
+// It logs a fatal error and exits if the variable is not present or if parsing fails.
 func MustGetEnvAs[T Parsable](key string) T {
 	value, ok := os.LookupEnv(key)
 	if !ok {

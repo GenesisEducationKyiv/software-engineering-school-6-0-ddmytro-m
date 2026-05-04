@@ -5,8 +5,11 @@ import (
 	"net/http"
 )
 
+// ResponseHandler is a function type that takes an HTTP response and returns a parsed result and an error.
 type ResponseHandler[T any] func(res *http.Response) (T, error)
 
+// CreateStatusHandler returns a ResponseHandler that checks the HTTP status code
+// and handles API errors appropriately.
 func CreateStatusHandler[T any](decoder ResponseDecoder[T]) ResponseHandler[T] {
 	return func(res *http.Response) (T, error) {
 		var data T

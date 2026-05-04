@@ -1,3 +1,4 @@
+// Package github provides a client for interacting with the GitHub API.
 package github
 
 import (
@@ -11,7 +12,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type GitHubClient struct {
+// Client provides a client for interacting with the GitHub API.
+type Client struct {
 	token string
 
 	httpClient *http.Client
@@ -25,8 +27,9 @@ type GitHubClient struct {
 	lastLimits RateLimits
 }
 
-func NewGitHubClient(token string, httpClient *http.Client, cache *redis.Client, cacheTTL time.Duration, cacheErrorTTL time.Duration) *GitHubClient {
-	return &GitHubClient{
+// NewClient creates a new Client with the provided configuration.
+func NewClient(token string, httpClient *http.Client, cache *redis.Client, cacheTTL time.Duration, cacheErrorTTL time.Duration) *Client {
+	return &Client{
 		token: token,
 
 		httpClient: httpClient,
@@ -41,13 +44,13 @@ func NewGitHubClient(token string, httpClient *http.Client, cache *redis.Client,
 	}
 }
 
-func (c *GitHubClient) getCachedRateLimits() RateLimits {
+func (c *Client) getCachedRateLimits() RateLimits {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lastLimits
 }
 
-func (c *GitHubClient) setCachedRateLimits(newLimits RateLimits) {
+func (c *Client) setCachedRateLimits(newLimits RateLimits) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -67,17 +70,19 @@ func (c *GitHubClient) setCachedRateLimits(newLimits RateLimits) {
 	}
 }
 
-func (c *GitHubClient) GetBaseRateLimits() RateLimits {
+// GetBaseRateLimits returns the default rate limits based on whether a token is configured.
+func (c *Client) GetBaseRateLimits() RateLimits {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.token != "" {
 		return RateLimits{Limit: 5000, Remaining: 5000, ResetAt: time.Now().Add(1 * time.Hour)}
-	} else {
-		return RateLimits{Limit: 60, Remaining: 60, ResetAt: time.Now().Add(1 * time.Hour)}
 	}
+
+	return RateLimits{Limit: 60, Remaining: 60, ResetAt: time.Now().Add(1 * time.Hour)}
 }
 
-func (c *GitHubClient) GetRateLimits(ctx context.Context) RateLimits {
+// GetRateLimits retrieves the current rate limits, either from the cache or by making an API request.
+func (c *Client) GetRateLimits(ctx context.Context) RateLimits {
 	cached := c.getCachedRateLimits()
 	if cached.IsValid() {
 		return cached
@@ -89,13 +94,13 @@ func (c *GitHubClient) GetRateLimits(ctx context.Context) RateLimits {
 	return response.RateLimits
 }
 
-func get[T any](ctx context.Context, c *GitHubClient, path []string, etag string, cache bool, handler ResponseHandler[T]) GitHubResponse[T] {
+func get[T any](ctx context.Context, c *Client, path []string, etag string, cache bool, handler ResponseHandler[T]) Response[T] {
 	var endpoint string
 
 	if len(path) > 0 {
 		u, err := url.Parse(c.BaseURL)
 		if err != nil {
-			return GitHubResponse[T]{Error: err}
+			return Response[T]{Error: err}
 		}
 		endpoint = u.JoinPath(path...).String()
 	} else {
@@ -118,7 +123,7 @@ func get[T any](ctx context.Context, c *GitHubClient, path []string, etag string
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return GitHubResponse[T]{Error: &NetworkError{err}}
+		return Response[T]{Error: &NetworkError{err}}
 	}
 
 	if etag != "" {
@@ -130,7 +135,7 @@ func get[T any](ctx context.Context, c *GitHubClient, path []string, etag string
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return GitHubResponse[T]{Error: &NetworkError{err}}
+		return Response[T]{Error: &NetworkError{err}}
 	}
 	defer func() {
 		if cerr := res.Body.Close(); cerr != nil {
@@ -152,23 +157,27 @@ func get[T any](ctx context.Context, c *GitHubClient, path []string, etag string
 	return formattedResponse
 }
 
+// Repository represents a GitHub repository.
 type Repository struct {
 	ID       int64  `json:"id"`
 	FullName string `json:"full_name"`
 }
 
-func (c *GitHubClient) GetRepository(ctx context.Context, owner, name, etag string) GitHubResponse[Repository] {
+// GetRepository fetches information about a GitHub repository.
+func (c *Client) GetRepository(ctx context.Context, owner, name, etag string) Response[Repository] {
 	handler := CreateStatusHandler(jsonDecoder[Repository])
 	return get(ctx, c, []string{"repos", owner, name}, etag, true, handler)
 }
 
+// LatestRelease represents the latest release of a GitHub repository.
 type LatestRelease struct {
 	ID      int64  `json:"id"`
 	TagName string `json:"tag_name"`
 	URL     string `json:"html_url"`
 }
 
-func (c *GitHubClient) GetLatestRelease(ctx context.Context, owner, name, etag string) GitHubResponse[LatestRelease] {
+// GetLatestRelease fetches the latest release for a GitHub repository.
+func (c *Client) GetLatestRelease(ctx context.Context, owner, name, etag string) Response[LatestRelease] {
 	handler := CreateStatusHandler(jsonDecoder[LatestRelease])
 	return get(ctx, c, []string{"repos", owner, name, "releases", "latest"}, etag, true, handler)
 }

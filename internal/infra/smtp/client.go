@@ -1,3 +1,4 @@
+// Package smtp provides an SMTP client for sending emails.
 package smtp
 
 import (
@@ -7,6 +8,7 @@ import (
 	"github.com/wneessen/go-mail"
 )
 
+// Client represents an SMTP client for sending emails.
 type Client struct {
 	host        string
 	port        int
@@ -16,6 +18,7 @@ type Client struct {
 	senderEmail string
 }
 
+// NewClient creates a new SMTP Client instance.
 func NewClient(host string, port int, username, password, from, senderEmail string) *Client {
 	return &Client{
 		host:        host,
@@ -27,6 +30,7 @@ func NewClient(host string, port int, username, password, from, senderEmail stri
 	}
 }
 
+// SendEmail sends a plain text email using the configured SMTP server.
 func (c *Client) SendEmail(ctx context.Context, to, subject, body string) error {
 	m := mail.NewMsg()
 

@@ -1,3 +1,4 @@
+// Package mailer provides a worker that consumes delivery messages and sends emails via SMTP.
 package mailer
 
 import (
@@ -21,15 +22,17 @@ const (
 	maxRetries            = 5
 )
 
+// Mailer consumes messages from a Redis stream and sends emails.
 type Mailer struct {
-	stream      *redisDB.RedisStream
+	stream      *redisDB.Stream
 	group       string
 	workerCount int
 	msgQueue    chan redis.XMessage
 	smtpClient  *smtp.Client
 }
 
-func NewMailer(stream *redisDB.RedisStream, group string, workerCount int, smtpClient *smtp.Client) *Mailer {
+// NewMailer creates a new Mailer instance.
+func NewMailer(stream *redisDB.Stream, group string, workerCount int, smtpClient *smtp.Client) *Mailer {
 	return &Mailer{
 		stream:      stream,
 		group:       group,
@@ -39,6 +42,7 @@ func NewMailer(stream *redisDB.RedisStream, group string, workerCount int, smtpC
 	}
 }
 
+// Start begins the mailer, starting workers and consuming messages from the stream.
 func (m *Mailer) Start(ctx context.Context) {
 	if err := m.stream.EnsureConsumerGroup(ctx, m.group); err != nil {
 		log.Printf("mailer failed to ensure consumer group: %v", err)

@@ -1,3 +1,4 @@
+// Package db provides database models and connection management.
 package db
 
 import (
@@ -10,19 +11,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// Release represents the latest release information for a repository.
 type Release struct {
 	GitHubID int64  `gorm:"column:github_id"`
 	TagName  string `gorm:"column:tag_name;size:255"`
 	ETag     string `gorm:"size:255"`
 }
 
+// RepositoryStatus represents the current processing status of a repository.
 type RepositoryStatus string
 
+// Repository status constants.
 const (
 	StatusIdle       RepositoryStatus = "idle"
 	StatusProcessing RepositoryStatus = "processing"
 )
 
+// Repository represents a GitHub repository to be scanned.
 type Repository struct {
 	gorm.Model
 
@@ -40,14 +45,17 @@ type Repository struct {
 	Subscriptions []Subscription `gorm:"foreignKey:RepositoryID"`
 }
 
+// SubscriptionStatus represents the current status of a user's subscription.
 type SubscriptionStatus string
 
+// Subscription status constants.
 const (
 	StatusPending      SubscriptionStatus = "pending"
 	StatusActive       SubscriptionStatus = "active"
 	StatusUnsubscribed SubscriptionStatus = "unsubscribed"
 )
 
+// Subscription represents a user's subscription to a repository's releases.
 type Subscription struct {
 	gorm.Model
 
@@ -57,7 +65,7 @@ type Subscription struct {
 	Status SubscriptionStatus `gorm:"type:varchar(20);default:'pending'"`
 
 	ConfirmToken string `gorm:"uniqueIndex:idx_confirm_token,where:deleted_at IS NULL;size:32"`
-	ApiToken     string `gorm:"index:idx_api_token,where:deleted_at IS NULL;size:32"`
+	APIToken     string `gorm:"column:api_token;index:idx_api_token,where:deleted_at IS NULL;size:32"`
 }
 
 var (
@@ -65,6 +73,7 @@ var (
 	instance *gorm.DB
 )
 
+// Get returns the singleton database instance, initializing it if necessary.
 func Get() *gorm.DB {
 	once.Do(func() {
 		dsn := config.Get().DBDSN
@@ -84,6 +93,7 @@ func Get() *gorm.DB {
 	return instance
 }
 
+// Close closes the underlying SQL database connection.
 func Close() {
 	if instance != nil {
 		sqlDB, err := instance.DB()

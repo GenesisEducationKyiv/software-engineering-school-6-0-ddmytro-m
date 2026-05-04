@@ -32,13 +32,13 @@ func rateLimitHeaders(limit, remaining, resetUnix int64) map[string]string {
 	}
 }
 
-// newTestServer starts an httptest.Server and returns a GitHubClient whose
+// newTestServer starts an httptest.Server and returns a Client whose
 // httpClient is pre-configured to talk to it. The server is closed via t.Cleanup.
-func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *GitHubClient) {
+func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Client) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	c := NewGitHubClient("test-token", srv.Client(), nil, time.Duration(0), time.Duration(0))
+	c := NewClient("test-token", srv.Client(), nil, time.Duration(0), time.Duration(0))
 	c.BaseURL = srv.URL
 
 	return srv, c
@@ -46,7 +46,7 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *G
 
 // internal limits
 func TestUpdateInternalLimits_StoresValidLimits(t *testing.T) {
-	c := NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 
 	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
@@ -61,7 +61,7 @@ func TestUpdateInternalLimits_StoresValidLimits(t *testing.T) {
 }
 
 func TestUpdateInternalLimits_AllMissingIsIgnored(t *testing.T) {
-	c := NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 	reset := time.Now().Add(time.Hour)
 	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
 
@@ -73,7 +73,7 @@ func TestUpdateInternalLimits_AllMissingIsIgnored(t *testing.T) {
 }
 
 func TestUpdateInternalLimits_RetryAfterOnlyMovesForward(t *testing.T) {
-	c := NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 	later := time.Now().Add(90 * time.Second)
 	earlier := time.Now().Add(30 * time.Second)
 
@@ -89,7 +89,7 @@ func TestUpdateInternalLimits_RetryAfterOnlyMovesForward(t *testing.T) {
 // get
 func TestGet_200_ParsedAndRateLimitsCached(t *testing.T) {
 	epoch := int64(1_700_000_000)
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		for k, v := range rateLimitHeaders(5000, 4998, epoch) {
 			w.Header().Set(k, v)
 		}
@@ -143,7 +143,7 @@ func TestGet_304_ETagSentAndZeroValueReturned(t *testing.T) {
 }
 
 func TestGet_404_ReturnsAPIError(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
@@ -191,7 +191,7 @@ func TestGet_AuthorizationHeader_OmittedWhenNoToken(t *testing.T) {
 }
 
 func TestGet_NetworkFailure_ReturnsNetworkError(t *testing.T) {
-	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	srv, c := newTestServer(t, func(_ http.ResponseWriter, _ *http.Request) {})
 	srv.Close() // close before the request is made
 
 	resp := get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
@@ -203,7 +203,7 @@ func TestGet_NetworkFailure_ReturnsNetworkError(t *testing.T) {
 }
 
 func TestGet_CancelledContext_ReturnsNetworkError(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	})
@@ -260,7 +260,7 @@ func TestGetRepository_304_PassesETag(t *testing.T) {
 }
 
 func TestGetRepository_404_ReturnsAPIError(t *testing.T) {
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
@@ -274,7 +274,7 @@ func TestGetRepository_404_ReturnsAPIError(t *testing.T) {
 }
 
 func TestGetRepository_InvalidBaseURL(t *testing.T) {
-	c := NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 	c.BaseURL = "://invalid-url" // invalid format to force url.Parse to fail
 
 	resp := c.GetRepository(context.Background(), "owner", "repo", "")

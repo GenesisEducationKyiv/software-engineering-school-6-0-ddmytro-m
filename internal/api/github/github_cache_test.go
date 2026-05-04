@@ -83,7 +83,7 @@ func TestGet_CacheHit(t *testing.T) {
 	c.cache = rc
 	c.cacheTTL = 1 * time.Minute
 
-	cachedResp := GitHubResponse[LatestRelease]{
+	cachedResp := Response[LatestRelease]{
 		Data:       LatestRelease{TagName: "v2.0.0"},
 		StatusCode: 200,
 	}

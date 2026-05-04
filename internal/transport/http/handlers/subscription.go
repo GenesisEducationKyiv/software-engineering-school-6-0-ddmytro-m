@@ -1,3 +1,4 @@
+// Package handlers provides HTTP request handlers for the application.
 package handlers
 
 import (
@@ -14,13 +15,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// SubscriptionHandler handles HTTP requests related to subscriptions.
 type SubscriptionHandler struct {
 	db       *gorm.DB
-	ghClient *github.GitHubClient
+	ghClient *github.Client
 	emailMQ  *mq.EmailMQ
 }
 
-func NewSubscriptionHandler(db *gorm.DB, ghClient *github.GitHubClient, emailMQ *mq.EmailMQ) *SubscriptionHandler {
+// NewSubscriptionHandler creates a new instance of SubscriptionHandler.
+func NewSubscriptionHandler(db *gorm.DB, ghClient *github.Client, emailMQ *mq.EmailMQ) *SubscriptionHandler {
 	return &SubscriptionHandler{
 		db:       db,
 		ghClient: ghClient,
@@ -28,6 +31,7 @@ func NewSubscriptionHandler(db *gorm.DB, ghClient *github.GitHubClient, emailMQ 
 	}
 }
 
+// RegisterRoutes registers the subscription routes with the given router group.
 func (h *SubscriptionHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.POST("/subscribe", h.Subscribe)
 	r.GET("/confirm/:token", h.Confirm)
@@ -58,11 +62,13 @@ func bearerToken(c *gin.Context) string {
 	return strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 }
 
+// SubscribeRequest represents the JSON body of a subscribe request.
 type SubscribeRequest struct {
 	Email string `json:"email"`
 	Repo  string `json:"repo"`
 }
 
+// Subscribe handles the creation or updating of a subscription.
 func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	metrics.SubscribeAttempts.Inc()
 
@@ -157,7 +163,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		// re-send confirmation for a pending or unsubscribed record.
 		sub.Status = db.StatusPending
 		sub.ConfirmToken = confirmToken
-		sub.ApiToken = "" // only issued on confirmation
+		sub.APIToken = "" // only issued on confirmation
 		if err := h.db.Save(&sub).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update subscription"})
 			return
@@ -182,7 +188,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 			RepositoryID: repo.ID,
 			Status:       db.StatusPending,
 			ConfirmToken: confirmToken,
-			ApiToken:     "",
+			APIToken:     "",
 		}
 		if err := h.db.Create(&sub).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription"})
@@ -201,6 +207,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Confirmation email sent"})
 }
 
+// Confirm handles the confirmation of a pending subscription.
 func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 	metrics.ConfirmAttempts.Inc()
 
@@ -227,7 +234,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 			return
 		}
 		sub.Status = db.StatusActive
-		sub.ApiToken = apiToken
+		sub.APIToken = apiToken
 		if err := h.db.Save(&sub).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to activate subscription"})
 			return
@@ -235,10 +242,11 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 	}
 
 	metrics.ConfirmSuccesses.Inc()
-	c.Header("X-Api-Token", sub.ApiToken)
+	c.Header("X-Api-Token", sub.APIToken)
 	c.JSON(http.StatusOK, gin.H{"message": "Subscription confirmed successfully"})
 }
 
+// Unsubscribe handles the removal of an active subscription.
 func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 	metrics.UnsubscribeAttempts.Inc()
 
@@ -280,6 +288,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Unsubscribed successfully"})
 }
 
+// SubscriptionItem represents a single subscription in the response list.
 type SubscriptionItem struct {
 	Email       string `json:"email"`
 	Repo        string `json:"repo"`
@@ -287,6 +296,7 @@ type SubscriptionItem struct {
 	LastSeenTag string `json:"last_seen_tag"`
 }
 
+// GetSubscriptions handles fetching all subscriptions for a specific user.
 func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 	email := strings.TrimSpace(c.Query("email"))
 	if email == "" {

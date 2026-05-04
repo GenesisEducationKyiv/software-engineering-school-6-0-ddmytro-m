@@ -1,3 +1,4 @@
+// Package scanner provides a worker that periodically checks repositories for updates.
 package scanner
 
 import (
@@ -14,9 +15,10 @@ import (
 	"gorm.io/gorm"
 )
 
+// Scanner periodically checks repositories for updates.
 type Scanner struct {
 	db       *gorm.DB
-	gh       *github.GitHubClient
+	gh       *github.Client
 	notifier Notifier
 	limiter  *rate.Limiter
 
@@ -30,7 +32,8 @@ type Scanner struct {
 	safetyBuffer     float64 // e.g. 20%
 }
 
-func NewScanner(orm *gorm.DB, ghClient *github.GitHubClient, notifier Notifier, config *config.ScannerConfig) *Scanner {
+// NewScanner creates a new Scanner instance.
+func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, config *config.ScannerConfig) *Scanner {
 	limiter := rate.NewLimiter(rate.Limit(1), 1)
 
 	return &Scanner{
@@ -49,6 +52,7 @@ func NewScanner(orm *gorm.DB, ghClient *github.GitHubClient, notifier Notifier, 
 	}
 }
 
+// Start begins the scanning process, starting workers and the producer loop.
 func (s *Scanner) Start(ctx context.Context) {
 	s.recover()
 
@@ -157,9 +161,9 @@ func (s *Scanner) produce(ctx context.Context) {
 		if len(ids) == 0 {
 			log.Print("no repositories to scan")
 			return nil
-		} else {
-			log.Printf("found %d repositories to scan", len(ids))
 		}
+
+		log.Printf("found %d repositories to scan", len(ids))
 
 		return tx.Model(&db.Repository{}).
 			Where("id IN ?", ids).

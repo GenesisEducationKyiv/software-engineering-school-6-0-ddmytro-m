@@ -1,3 +1,4 @@
+// Package main is the entry point for the github-scanner server.
 package main
 
 import (
@@ -39,7 +40,7 @@ func main() {
 		}
 	}()
 
-	ghClient := github.NewGitHubClient(
+	ghClient := github.NewClient(
 		cfg.GitHub.Token,
 		&http.Client{Timeout: cfg.GitHub.Timeout},
 		redisClient,
@@ -52,7 +53,7 @@ func main() {
 
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
-	stream := redisDB.NewRedisStream(redisClient, mq.DeliveryStream)
+	stream := redisDB.NewStream(redisClient, mq.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
 
 	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)

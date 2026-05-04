@@ -76,7 +76,7 @@ func TestProcessMessage_ValidEvents(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	stream := redisDB.NewRedisStream(rc, "test_stream")
+	stream := redisDB.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
 	_ = mailer.stream.EnsureConsumerGroup(ctx, mailer.group)
@@ -108,7 +108,7 @@ func TestProcessMessage_InvalidPayloadType(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	stream := redisDB.NewRedisStream(rc, "test_stream")
+	stream := redisDB.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
 	msg := redis.XMessage{
@@ -125,7 +125,7 @@ func TestProcessMessage_InvalidJSON(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	stream := redisDB.NewRedisStream(rc, "test_stream")
+	stream := redisDB.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
 	msg := redis.XMessage{
@@ -142,7 +142,7 @@ func TestMailer_StartAndConsume(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	stream := redisDB.NewRedisStream(rc, "test_stream")
+	stream := redisDB.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 2, nil)
 
 	if err := stream.EnsureConsumerGroup(ctx, "test_group"); err != nil {

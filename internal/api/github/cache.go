@@ -15,7 +15,7 @@ type cachedResponse[T any] struct {
 	Err        *cachedError `json:"Err,omitempty"`
 }
 
-func toCached[T any](r GitHubResponse[T]) cachedResponse[T] {
+func toCached[T any](r Response[T]) cachedResponse[T] {
 	cr := cachedResponse[T]{
 		Data:       r.Data,
 		ETag:       r.ETag,
@@ -46,8 +46,8 @@ func toCached[T any](r GitHubResponse[T]) cachedResponse[T] {
 	return cr
 }
 
-func (cr cachedResponse[T]) toResponse() GitHubResponse[T] {
-	r := GitHubResponse[T]{
+func (cr cachedResponse[T]) toResponse() Response[T] {
+	r := Response[T]{
 		Data:       cr.Data,
 		ETag:       cr.ETag,
 		StatusCode: cr.StatusCode,
@@ -76,21 +76,21 @@ func (cr cachedResponse[T]) toResponse() GitHubResponse[T] {
 	return r
 }
 
-func (c *GitHubClient) getCacheKey(endpoint string) string {
+func (c *Client) getCacheKey(endpoint string) string {
 	return "github_cache:" + endpoint
 }
 
-func tryGetCache[T any](ctx context.Context, c *GitHubClient, cacheKey string) (GitHubResponse[T], bool) {
+func tryGetCache[T any](ctx context.Context, c *Client, cacheKey string) (Response[T], bool) {
 	if cached, err := c.cache.Get(ctx, cacheKey).Bytes(); err == nil {
 		var cr cachedResponse[T]
 		if err := json.Unmarshal(cached, &cr); err == nil {
 			return cr.toResponse(), true
 		}
 	}
-	return GitHubResponse[T]{}, false
+	return Response[T]{}, false
 }
 
-func trySetCache[T any](ctx context.Context, c *GitHubClient, cacheKey string, r GitHubResponse[T]) {
+func trySetCache[T any](ctx context.Context, c *Client, cacheKey string, r Response[T]) {
 	if r.StatusCode == 0 {
 		return
 	}

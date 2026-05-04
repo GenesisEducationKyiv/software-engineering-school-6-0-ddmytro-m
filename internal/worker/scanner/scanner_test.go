@@ -150,7 +150,7 @@ func getCleanDB(t *testing.T) *gorm.DB {
 	return testDB
 }
 
-func newScanner(orm *gorm.DB, ghClient *github.GitHubClient, notifier Notifier) *Scanner {
+func newScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier) *Scanner {
 	cfg := &config.ScannerConfig{
 		Workers:          1,
 		QueueSize:        10,
@@ -163,7 +163,7 @@ func newScanner(orm *gorm.DB, ghClient *github.GitHubClient, notifier Notifier) 
 	return s
 }
 
-func newGitHubServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *github.GitHubClient) {
+func newGitHubServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *github.Client) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -171,7 +171,7 @@ func newGitHubServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, 
 	client := srv.Client()
 	client.Timeout = 5 * time.Second
 
-	c := github.NewGitHubClient("test-token", client, nil, time.Duration(0), time.Duration(0))
+	c := github.NewClient("test-token", client, nil, time.Duration(0), time.Duration(0))
 	c.BaseURL = srv.URL
 
 	return srv, c
@@ -203,7 +203,7 @@ func seedSubscription(t *testing.T, orm *gorm.DB, repoID uint, email string) *db
 		RepositoryID: repoID,
 		Status:       db.StatusActive,
 		ConfirmToken: fmt.Sprintf("tok-%d-%s", repoID, email),
-		ApiToken:     fmt.Sprintf("api-%d-%s", repoID, email),
+		APIToken:     fmt.Sprintf("api-%d-%s", repoID, email),
 	}
 	if err := orm.Create(sub).Error; err != nil {
 		t.Fatalf("seedSubscription: %v", err)
@@ -557,7 +557,7 @@ func TestProcessRepo_StatusRestoredToIdleAfterProcessing(t *testing.T) {
 
 func TestProduce_RateLimitLow_LimiterSetToZero(t *testing.T) {
 	dbConn := getCleanDB(t)
-	ghClient := github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	ghClient := github.NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 
 	reset := time.Now().Add(time.Hour)
 	ghClient.SetRateLimitsForTest(github.RateLimits{
@@ -579,7 +579,7 @@ func TestProduce_RateLimitLow_LimiterSetToZero(t *testing.T) {
 
 func TestProduce_RateLimitHealthy_LimiterPositive(t *testing.T) {
 	dbConn := getCleanDB(t)
-	ghClient := github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	ghClient := github.NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 
 	reset := time.Now().Add(time.Hour)
 	ghClient.SetRateLimitsForTest(github.RateLimits{
@@ -598,7 +598,7 @@ func TestProduce_RateLimitHealthy_LimiterPositive(t *testing.T) {
 
 func TestProduce_RetryAfterInFuture_LimiterFrozen(t *testing.T) {
 	dbConn := getCleanDB(t)
-	ghClient := github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	ghClient := github.NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 
 	ghClient.SetRateLimitsForTest(github.RateLimits{
 		Limit:      5000,
@@ -617,7 +617,7 @@ func TestProduce_RetryAfterInFuture_LimiterFrozen(t *testing.T) {
 
 func TestProduce_RpsCapAt10(t *testing.T) {
 	dbConn := getCleanDB(t)
-	ghClient := github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	ghClient := github.NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 
 	ghClient.SetRateLimitsForTest(github.RateLimits{
 		Limit:     1_000_000,
@@ -641,7 +641,7 @@ func TestHandleNewRelease_NotifiesAllActiveSubscribers(t *testing.T) {
 	seedSubscription(t, dbConn, repo.ID, "one@example.com")
 	seedSubscription(t, dbConn, repo.ID, "two@example.com")
 
-	s := newScanner(dbConn, github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0)), notifier)
+	s := newScanner(dbConn, github.NewClient("", nil, nil, time.Duration(0), time.Duration(0)), notifier)
 	s.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
 
 	if len(notifier.releases) != 2 {
@@ -666,7 +666,7 @@ func TestRecover_ResetsProcessingToIdle(t *testing.T) {
 	repo2 := seedRepo(t, dbConn, 2, "org", "repo2", "v1", "")
 	dbConn.Model(repo2).Update("status", db.StatusIdle)
 
-	s := newScanner(dbConn, github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0)), &captureNotifier{})
+	s := newScanner(dbConn, github.NewClient("", nil, nil, time.Duration(0), time.Duration(0)), &captureNotifier{})
 	s.recover()
 
 	var updated1 db.Repository
@@ -684,7 +684,7 @@ func TestRecover_ResetsProcessingToIdle(t *testing.T) {
 
 func TestProduce_MultipleRepos_CorrectBatching(t *testing.T) {
 	dbConn := getCleanDB(t)
-	ghClient := github.NewGitHubClient("", nil, nil, time.Duration(0), time.Duration(0))
+	ghClient := github.NewClient("", nil, nil, time.Duration(0), time.Duration(0))
 
 	// setup healthy rate limits to allow batching
 	reset := time.Now().Add(time.Hour)
