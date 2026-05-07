@@ -24,22 +24,23 @@ func toCached[T any](r Response[T]) cachedResponse[T] {
 	}
 
 	if r.Error != nil {
-		switch e := r.Error.(type) {
-		case *APIError:
-			cr.Err = &cachedError{
-				Type:             "api",
-				Message:          e.Message,
-				Code:             e.StatusCode,
-				DocumentationURL: e.DocumentationURL,
+		{
+			var e *APIError
+			var e1 *DecodingError
+			var e2 *UnexpectedStatusError
+			var e3 *NetworkError
+			switch {
+			case errors.As(r.Error, &e):
+				cr.Err = &cachedError{Type: "api", Message: e.Message, Code: e.StatusCode, DocumentationURL: e.DocumentationURL}
+			case errors.As(r.Error, &e1):
+				cr.Err = &cachedError{Type: "decoding", Message: e1.Err.Error()}
+			case errors.As(r.Error, &e2):
+				cr.Err = &cachedError{Type: "unexpected_status", Code: e2.StatusCode}
+			case errors.As(r.Error, &e3):
+				cr.Err = &cachedError{Type: "network", Message: e3.Err.Error()}
+			default:
+				cr.Err = &cachedError{Type: "unknown", Message: e.Error()}
 			}
-		case *DecodingError:
-			cr.Err = &cachedError{Type: "decoding", Message: e.Err.Error()}
-		case *UnexpectedStatusError:
-			cr.Err = &cachedError{Type: "unexpected_status", Code: e.StatusCode}
-		case *NetworkError:
-			cr.Err = &cachedError{Type: "network", Message: e.Err.Error()}
-		default:
-			cr.Err = &cachedError{Type: "unknown", Message: e.Error()}
 		}
 	}
 

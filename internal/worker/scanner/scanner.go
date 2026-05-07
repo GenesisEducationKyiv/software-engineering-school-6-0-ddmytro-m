@@ -131,7 +131,7 @@ func (s *Scanner) produce(ctx context.Context) {
 		// don't exceed 10 RPS to avoid GitHub Secondary Limits
 		rps = math.Min(rps, 10.0)
 		// each repo requires up to 2 API requests (repo status + latest release)
-		rps = rps / 2.0
+		rps /= 2.0
 	}
 
 	s.limiter.SetLimit(rate.Limit(rps))

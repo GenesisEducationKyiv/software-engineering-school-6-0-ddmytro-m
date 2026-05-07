@@ -12,6 +12,18 @@ linters:
     - revive
     - misspell
     - whitespace
+    - gocritic
+    - contextcheck
+    - nestif
+    - dupl
+    - errorlint
+    - unparam
+    - unused
+  settings:
+    nestif:
+      min-complexity: 4
+    dupl:
+      threshold: 100
 
 issues:
   max-issues-per-linter: 0

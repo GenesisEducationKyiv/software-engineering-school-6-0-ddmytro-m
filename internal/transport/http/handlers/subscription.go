@@ -4,6 +4,7 @@ package handlers
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -98,7 +99,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	var repo db.Repository
 	err := h.db.Where("owner = ? AND name = ?", owner, name).First(&repo).Error
 	if err != nil {
-		if err != gorm.ErrRecordNotFound {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 			return
 		}
@@ -110,19 +111,13 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 
 		err = h.db.Where("github_id = ?", ghRepo.Data.ID).First(&repo).Error
-		switch err {
-		case nil:
-			// repo already exists (renamed/removed)
+		switch {
+		case err == nil:
 			repo.Owner = owner
 			repo.Name = name
 			h.db.Save(&repo)
-		case gorm.ErrRecordNotFound:
-			repo = db.Repository{
-				GitHubID: ghRepo.Data.ID,
-				Owner:    owner,
-				Name:     name,
-				Status:   db.StatusIdle,
-			}
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			repo = db.Repository{GitHubID: ghRepo.Data.ID, Owner: owner, Name: name, Status: db.StatusIdle}
 			if err := h.db.Create(&repo).Error; err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save repository"})
 				return
@@ -135,32 +130,34 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 
 	var sub db.Subscription
 	err = h.db.Where("email = ? AND repository_id = ?", req.Email, repo.ID).First(&sub).Error
-	if err != nil && err != gorm.ErrRecordNotFound {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
-	if err == nil {
-		if sub.Status == db.StatusActive {
-			metrics.SubscribeConflicts.Inc()
-			c.JSON(http.StatusConflict, gin.H{"message": "Email already subscribed to this repository"})
+	recordExists := err == nil
+
+	if recordExists && sub.Status == db.StatusActive {
+		metrics.SubscribeConflicts.Inc()
+		c.JSON(http.StatusConflict, gin.H{"message": "Email already subscribed to this repository"})
+		return
+	}
+
+	var confirmToken string
+	for {
+		confirmToken, err = generateToken()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
-
-		var confirmToken string
-		for {
-			confirmToken, err = generateToken()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
-				return
-			}
-			var count int64
-			h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
-			if count == 0 {
-				break
-			}
+		var count int64
+		h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
+		if count == 0 {
+			break
 		}
+	}
 
+	if recordExists {
 		// re-send confirmation for a pending or unsubscribed record.
 		sub.Status = db.StatusPending
 		sub.ConfirmToken = confirmToken
@@ -170,20 +167,6 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 			return
 		}
 	} else {
-		var confirmToken string
-		for {
-			confirmToken, err = generateToken()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
-				return
-			}
-			var count int64
-			h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
-			if count == 0 {
-				break
-			}
-		}
-
 		sub = db.Subscription{
 			Email:        req.Email,
 			RepositoryID: repo.ID,
@@ -220,7 +203,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 
 	var sub db.Subscription
 	if err := h.db.Where("confirm_token = ?", token).First(&sub).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Invalid or expired token"})
 			return
 		}
@@ -269,7 +252,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 
 	var sub db.Subscription
 	if err := h.db.Where("confirm_token = ? AND api_token = ?", confirmToken, apiToken).First(&sub).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 			return
 		}
@@ -313,7 +296,7 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 
 	var caller db.Subscription
 	if err := h.db.Where("email = ? AND api_token = ?", email, apiToken).First(&caller).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token for the given email"})
 			return
 		}
