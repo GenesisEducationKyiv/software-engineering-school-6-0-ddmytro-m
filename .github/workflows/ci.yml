@@ -36,4 +36,4 @@ jobs:
           go-version: "1.26.1"
 
       - name: Run tests
-        run: go test -v --tags="testing" ./internal/api/github ./internal/worker/scanner ./internal/worker/mailer
+        run: go test -v -tags="unit,integration" ./...

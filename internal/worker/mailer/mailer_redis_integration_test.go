@@ -1,3 +1,5 @@
+//go:build integration
+
 package mailer
 
 import (
@@ -16,6 +18,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+// Mailer-Redis integration tests
 
 var testRedis *redis.Client
 
