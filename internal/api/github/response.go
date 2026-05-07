@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// RateLimits represents the GitHub API rate limits.
 type RateLimits struct {
 	Limit      int64
 	Remaining  int64
@@ -13,11 +14,13 @@ type RateLimits struct {
 	RetryAfter time.Time
 }
 
+// IsValid checks if the rate limits are correctly initialized.
 func (rl *RateLimits) IsValid() bool {
 	return rl.Limit != -1 && rl.Remaining != -1 && !rl.ResetAt.IsZero()
 }
 
-type GitHubResponse[T any] struct {
+// Response is a generic response wrapper for the GitHub API.
+type Response[T any] struct {
 	Data T
 
 	RateLimits RateLimits
@@ -27,9 +30,9 @@ type GitHubResponse[T any] struct {
 	Error      error `json:"-"`
 }
 
-func formatResponse[T any](res *http.Response, data T, err error) GitHubResponse[T] {
+func formatResponse[T any](res *http.Response, data T, err error) Response[T] {
 	if res == nil {
-		return GitHubResponse[T]{Data: data, Error: err}
+		return Response[T]{Data: data, Error: err}
 	}
 
 	rateLimits := RateLimits{
@@ -39,7 +42,7 @@ func formatResponse[T any](res *http.Response, data T, err error) GitHubResponse
 		RetryAfter: getRetryAfterTime(res.Header, time.Now()),
 	}
 
-	return GitHubResponse[T]{
+	return Response[T]{
 		Data:       data,
 		RateLimits: rateLimits,
 		ETag:       res.Header.Get("ETag"),

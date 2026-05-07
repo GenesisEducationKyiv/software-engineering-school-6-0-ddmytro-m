@@ -24,7 +24,7 @@ Notifier uses Redis MQ to ensure messages are delivered to the clients.
 Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV is development by default).
 ```shell
 go mod download
-go run ./cmd/api/main.go
+make run
 ```
 
 ### Docker
@@ -33,7 +33,22 @@ docker compose --env-file .env up -d
 ```
 
 ## Testing
+```shell
+make test
+```
+
+### Run specific tests
 integration tests require docker installation.
 ```shell
-go test --tags="testing" ./internal/api/github ./internal/worker/scanner ./internal/worker/mailer
+make test:unit
+make test:integration
+```
+
+## Linting
+```shell
+make lint
+```
+apply autofixes:
+```shell
+make lint:fix
 ```

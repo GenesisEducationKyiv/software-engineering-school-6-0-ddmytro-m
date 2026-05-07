@@ -9,25 +9,28 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type RedisStream struct {
+// Stream represents a Redis Stream client wrapper.
+type Stream struct {
 	client     *redis.Client
 	stream     string
 	deadLetter string
 }
 
-func NewRedisStream(client *redis.Client, stream string) *RedisStream {
+// NewStream creates a new instance of Stream.
+func NewStream(client *redis.Client, stream string) *Stream {
 	if client == nil {
 		return nil
 	}
 
-	return &RedisStream{
+	return &Stream{
 		client:     client,
 		stream:     stream,
 		deadLetter: fmt.Sprintf("%s:dead-letter", stream),
 	}
 }
 
-func (n *RedisStream) EnsureConsumerGroup(ctx context.Context, group string) error {
+// EnsureConsumerGroup ensures that a consumer group exists for the stream.
+func (n *Stream) EnsureConsumerGroup(ctx context.Context, group string) error {
 	err := n.client.XGroupCreateMkStream(ctx, n.stream, group, "0").Err()
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return err
@@ -35,7 +38,8 @@ func (n *RedisStream) EnsureConsumerGroup(ctx context.Context, group string) err
 	return nil
 }
 
-func (n *RedisStream) Publish(ctx context.Context, msg any) error {
+// Publish publishes a message to the stream.
+func (n *Stream) Publish(ctx context.Context, msg any) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -47,7 +51,8 @@ func (n *RedisStream) Publish(ctx context.Context, msg any) error {
 	}).Err()
 }
 
-func (n *RedisStream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]redis.XMessage, error) {
+// ReadGroup reads messages from a stream using a consumer group.
+func (n *Stream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]redis.XMessage, error) {
 	res, err := n.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    group,
 		Consumer: consumer,
@@ -64,11 +69,13 @@ func (n *RedisStream) ReadGroup(ctx context.Context, group, consumer string, cou
 	return res[0].Messages, nil
 }
 
-func (n *RedisStream) Ack(ctx context.Context, group string, ids ...string) error {
+// Ack acknowledges messages in a consumer group.
+func (n *Stream) Ack(ctx context.Context, group string, ids ...string) error {
 	return n.client.XAck(ctx, n.stream, group, ids...).Err()
 }
 
-func (n *RedisStream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []redis.XMessage, next string, err error) {
+// AutoClaim automatically claims pending messages from other consumers.
+func (n *Stream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []redis.XMessage, next string, err error) {
 	msgs, next, err = n.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   n.stream,
 		Group:    group,
@@ -85,7 +92,8 @@ func (n *RedisStream) AutoClaim(ctx context.Context, group, consumer string, min
 	return msgs, next, nil
 }
 
-func (n *RedisStream) PublishDeadLetter(ctx context.Context, msg any) error {
+// PublishDeadLetter publishes a message to the dead-letter stream.
+func (n *Stream) PublishDeadLetter(ctx context.Context, msg any) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("dead-letter marshal: %w", err)

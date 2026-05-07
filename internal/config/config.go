@@ -1,3 +1,4 @@
+// Package config provides configuration management for the application.
 package config
 
 import (
@@ -5,10 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/utils"
 	"github.com/joho/godotenv"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/utils"
 )
 
+// GithubConfig holds the configuration for the GitHub API client.
 type GithubConfig struct {
 	Token         string
 	Timeout       time.Duration
@@ -16,6 +19,7 @@ type GithubConfig struct {
 	CacheErrorTTL time.Duration
 }
 
+// ScannerConfig holds the configuration for the repository scanner worker.
 type ScannerConfig struct {
 	Workers          int
 	QueueSize        int
@@ -24,6 +28,7 @@ type ScannerConfig struct {
 	MinInterval      time.Duration
 }
 
+// SMTPConfig holds the configuration for the SMTP client used for sending emails.
 type SMTPConfig struct {
 	Host string
 	Port int
@@ -35,10 +40,12 @@ type SMTPConfig struct {
 	From string
 }
 
+// RedisConfig holds the configuration for connecting to Redis.
 type RedisConfig struct {
 	Addr string
 }
 
+// Config holds the overall configuration for the application.
 type Config struct {
 	AppEnv   string
 	LogLevel string
@@ -123,6 +130,7 @@ var (
 	once     sync.Once
 )
 
+// Get retrieves the global application configuration, loading it if necessary.
 func Get() *Config {
 	once.Do(func() {
 		env := utils.GetEnv("APP_ENV", "development")

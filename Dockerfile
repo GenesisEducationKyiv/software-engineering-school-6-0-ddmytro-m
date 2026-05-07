@@ -7,11 +7,11 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/github-scanner ./cmd/server/main.go
+RUN CGO_ENABLED=0 GOOS=linux make build:server
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates tzdata
-COPY --from=builder /bin/github-scanner /bin/github-scanner
+COPY --from=builder /bin/server /bin/server
 
 EXPOSE 8080
-ENTRYPOINT ["/bin/github-scanner"]
+ENTRYPOINT ["/bin/server"]

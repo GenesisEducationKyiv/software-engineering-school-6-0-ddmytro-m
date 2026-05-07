@@ -1,26 +1,31 @@
+// Package handlers provides HTTP request handlers for the application.
 package handlers
 
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 
-	"github.com/ddmytro-m/github-scanner/internal/api/github"
-	"github.com/ddmytro-m/github-scanner/internal/infra/db"
-	"github.com/ddmytro-m/github-scanner/internal/infra/mq"
-	"github.com/ddmytro-m/github-scanner/internal/metrics"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
+// SubscriptionHandler handles HTTP requests related to subscriptions.
 type SubscriptionHandler struct {
 	db       *gorm.DB
-	ghClient *github.GitHubClient
+	ghClient *github.Client
 	emailMQ  *mq.EmailMQ
 }
 
-func NewSubscriptionHandler(db *gorm.DB, ghClient *github.GitHubClient, emailMQ *mq.EmailMQ) *SubscriptionHandler {
+// NewSubscriptionHandler creates a new instance of SubscriptionHandler.
+func NewSubscriptionHandler(db *gorm.DB, ghClient *github.Client, emailMQ *mq.EmailMQ) *SubscriptionHandler {
 	return &SubscriptionHandler{
 		db:       db,
 		ghClient: ghClient,
@@ -28,6 +33,7 @@ func NewSubscriptionHandler(db *gorm.DB, ghClient *github.GitHubClient, emailMQ 
 	}
 }
 
+// RegisterRoutes registers the subscription routes with the given router group.
 func (h *SubscriptionHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.POST("/subscribe", h.Subscribe)
 	r.GET("/confirm/:token", h.Confirm)
@@ -58,11 +64,13 @@ func bearerToken(c *gin.Context) string {
 	return strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 }
 
+// SubscribeRequest represents the JSON body of a subscribe request.
 type SubscribeRequest struct {
 	Email string `json:"email"`
 	Repo  string `json:"repo"`
 }
 
+// Subscribe handles the creation or updating of a subscription.
 func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	metrics.SubscribeAttempts.Inc()
 
@@ -91,7 +99,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	var repo db.Repository
 	err := h.db.Where("owner = ? AND name = ?", owner, name).First(&repo).Error
 	if err != nil {
-		if err != gorm.ErrRecordNotFound {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 			return
 		}
@@ -103,19 +111,13 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 
 		err = h.db.Where("github_id = ?", ghRepo.Data.ID).First(&repo).Error
-		switch err {
-		case nil:
-			// repo already exists (renamed/removed)
+		switch {
+		case err == nil:
 			repo.Owner = owner
 			repo.Name = name
 			h.db.Save(&repo)
-		case gorm.ErrRecordNotFound:
-			repo = db.Repository{
-				GitHubID: ghRepo.Data.ID,
-				Owner:    owner,
-				Name:     name,
-				Status:   db.StatusIdle,
-			}
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			repo = db.Repository{GitHubID: ghRepo.Data.ID, Owner: owner, Name: name, Status: db.StatusIdle}
 			if err := h.db.Create(&repo).Error; err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save repository"})
 				return
@@ -128,61 +130,49 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 
 	var sub db.Subscription
 	err = h.db.Where("email = ? AND repository_id = ?", req.Email, repo.ID).First(&sub).Error
-	if err != nil && err != gorm.ErrRecordNotFound {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
-	if err == nil {
-		if sub.Status == db.StatusActive {
-			metrics.SubscribeConflicts.Inc()
-			c.JSON(http.StatusConflict, gin.H{"message": "Email already subscribed to this repository"})
+	recordExists := err == nil
+
+	if recordExists && sub.Status == db.StatusActive {
+		metrics.SubscribeConflicts.Inc()
+		c.JSON(http.StatusConflict, gin.H{"message": "Email already subscribed to this repository"})
+		return
+	}
+
+	var confirmToken string
+	for {
+		confirmToken, err = generateToken()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
-
-		var confirmToken string
-		for {
-			confirmToken, err = generateToken()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
-				return
-			}
-			var count int64
-			h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
-			if count == 0 {
-				break
-			}
+		var count int64
+		h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
+		if count == 0 {
+			break
 		}
+	}
 
+	if recordExists {
 		// re-send confirmation for a pending or unsubscribed record.
 		sub.Status = db.StatusPending
 		sub.ConfirmToken = confirmToken
-		sub.ApiToken = "" // only issued on confirmation
+		sub.APIToken = "" // only issued on confirmation
 		if err := h.db.Save(&sub).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update subscription"})
 			return
 		}
 	} else {
-		var confirmToken string
-		for {
-			confirmToken, err = generateToken()
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
-				return
-			}
-			var count int64
-			h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
-			if count == 0 {
-				break
-			}
-		}
-
 		sub = db.Subscription{
 			Email:        req.Email,
 			RepositoryID: repo.ID,
 			Status:       db.StatusPending,
 			ConfirmToken: confirmToken,
-			ApiToken:     "",
+			APIToken:     "",
 		}
 		if err := h.db.Create(&sub).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription"})
@@ -201,6 +191,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Confirmation email sent"})
 }
 
+// Confirm handles the confirmation of a pending subscription.
 func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 	metrics.ConfirmAttempts.Inc()
 
@@ -212,7 +203,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 
 	var sub db.Subscription
 	if err := h.db.Where("confirm_token = ?", token).First(&sub).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Invalid or expired token"})
 			return
 		}
@@ -227,7 +218,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 			return
 		}
 		sub.Status = db.StatusActive
-		sub.ApiToken = apiToken
+		sub.APIToken = apiToken
 		if err := h.db.Save(&sub).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to activate subscription"})
 			return
@@ -235,10 +226,11 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 	}
 
 	metrics.ConfirmSuccesses.Inc()
-	c.Header("X-Api-Token", sub.ApiToken)
+	c.Header("X-Api-Token", sub.APIToken)
 	c.JSON(http.StatusOK, gin.H{"message": "Subscription confirmed successfully"})
 }
 
+// Unsubscribe handles the removal of an active subscription.
 func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 	metrics.UnsubscribeAttempts.Inc()
 
@@ -260,7 +252,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 
 	var sub db.Subscription
 	if err := h.db.Where("confirm_token = ? AND api_token = ?", confirmToken, apiToken).First(&sub).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 			return
 		}
@@ -280,6 +272,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Unsubscribed successfully"})
 }
 
+// SubscriptionItem represents a single subscription in the response list.
 type SubscriptionItem struct {
 	Email       string `json:"email"`
 	Repo        string `json:"repo"`
@@ -287,6 +280,7 @@ type SubscriptionItem struct {
 	LastSeenTag string `json:"last_seen_tag"`
 }
 
+// GetSubscriptions handles fetching all subscriptions for a specific user.
 func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 	email := strings.TrimSpace(c.Query("email"))
 	if email == "" {
@@ -302,7 +296,7 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 
 	var caller db.Subscription
 	if err := h.db.Where("email = ? AND api_token = ?", email, apiToken).First(&caller).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token for the given email"})
 			return
 		}

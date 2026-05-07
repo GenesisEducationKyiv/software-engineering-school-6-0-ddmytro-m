@@ -1,4 +1,4 @@
-module github.com/ddmytro-m/github-scanner
+module github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m
 
 go 1.26.1
 

@@ -1,0 +1,43 @@
+version: "2"
+
+run:
+  timeout: 3m
+
+linters:
+  enable:
+    - govet
+    - gosec
+    - errcheck
+    - staticcheck
+    - revive
+    - misspell
+    - whitespace
+    - gocritic
+    - contextcheck
+    - nestif
+    - dupl
+    - errorlint
+    - unparam
+    - unused
+  settings:
+    nestif:
+      min-complexity: 4
+    dupl:
+      threshold: 100
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      rewrite-rules:
+        - pattern: "interface{}"
+          replacement: "any"
+    goimports:
+      local-prefixes:
+        - github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m

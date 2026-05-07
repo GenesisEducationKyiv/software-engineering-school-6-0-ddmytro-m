@@ -1,3 +1,4 @@
+// Package main is the entry point for the github-scanner server.
 package main
 
 import (
@@ -9,17 +10,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ddmytro-m/github-scanner/internal/api/github"
-	"github.com/ddmytro-m/github-scanner/internal/config"
-	"github.com/ddmytro-m/github-scanner/internal/infra/db"
-	"github.com/ddmytro-m/github-scanner/internal/infra/mq"
-	redisDB "github.com/ddmytro-m/github-scanner/internal/infra/redis"
-	"github.com/ddmytro-m/github-scanner/internal/infra/smtp"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 
-	transportHttp "github.com/ddmytro-m/github-scanner/internal/transport/http"
-	"github.com/ddmytro-m/github-scanner/internal/transport/http/handlers"
-	"github.com/ddmytro-m/github-scanner/internal/worker/mailer"
-	"github.com/ddmytro-m/github-scanner/internal/worker/scanner"
+	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/handlers"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/scanner"
 )
 
 func main() {
@@ -39,12 +40,14 @@ func main() {
 		}
 	}()
 
-	ghClient := github.NewGitHubClient(
-		cfg.GitHub.Token,
-		&http.Client{Timeout: cfg.GitHub.Timeout},
-		redisClient,
-		cfg.GitHub.CacheTTL,
-		cfg.GitHub.CacheErrorTTL,
+	ghClient := github.NewClient(
+		github.WithToken(cfg.GitHub.Token),
+		github.WithHTTPClient(&http.Client{Timeout: cfg.GitHub.Timeout}),
+		github.WithCache(
+			redisClient,
+			cfg.GitHub.CacheTTL,
+			cfg.GitHub.CacheErrorTTL,
+		),
 	)
 
 	emailMQ := mq.GetEmailMQ(redisClient)
@@ -52,7 +55,7 @@ func main() {
 
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
-	stream := redisDB.NewRedisStream(redisClient, mq.DeliveryStream)
+	stream := redisDB.NewStream(redisClient, mq.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
 
 	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)
