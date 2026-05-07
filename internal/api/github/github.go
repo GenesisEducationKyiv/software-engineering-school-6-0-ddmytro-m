@@ -121,7 +121,7 @@ func get[T any](ctx context.Context, c *Client, path []string, etag string, cach
 
 	var data T
 
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return Response[T]{Error: &NetworkError{err}}
 	}
