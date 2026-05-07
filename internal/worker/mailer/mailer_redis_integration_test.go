@@ -81,7 +81,9 @@ func TestProcessMessage_ValidEvents(t *testing.T) {
 	stream := redisDB.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
-	_ = mailer.stream.EnsureConsumerGroup(ctx, mailer.group)
+	if err := mailer.stream.EnsureConsumerGroup(ctx, mailer.group); err != nil {
+		t.Fatalf("failed to ensure consumer group: %v", err)
+	}
 
 	events := []struct {
 		name  string
