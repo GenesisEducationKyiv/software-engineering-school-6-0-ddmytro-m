@@ -36,17 +36,22 @@ func rateLimitHeaders(limit, remaining, resetUnix int64) map[string]string {
 // httpClient is pre-configured to talk to it. The server is closed via t.Cleanup.
 func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Client) {
 	t.Helper()
+
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	c := NewClient("test-token", srv.Client(), nil, time.Duration(0), time.Duration(0))
-	c.BaseURL = srv.URL
+
+	c := NewClient(
+		WithToken("test-token"),
+		WithHTTPClient(srv.Client()),
+		WithBaseURL(srv.URL),
+	)
 
 	return srv, c
 }
 
 // internal limits
 func TestUpdateInternalLimits_StoresValidLimits(t *testing.T) {
-	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient()
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 
 	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
@@ -61,10 +66,10 @@ func TestUpdateInternalLimits_StoresValidLimits(t *testing.T) {
 }
 
 func TestUpdateInternalLimits_AllMissingIsIgnored(t *testing.T) {
-	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient()
 	reset := time.Now().Add(time.Hour)
-	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
 
+	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
 	c.setCachedRateLimits(RateLimits{Limit: -1, Remaining: -1})
 
 	if got := c.getCachedRateLimits(); got.Limit != 5000 {
@@ -73,7 +78,8 @@ func TestUpdateInternalLimits_AllMissingIsIgnored(t *testing.T) {
 }
 
 func TestUpdateInternalLimits_RetryAfterOnlyMovesForward(t *testing.T) {
-	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
+	c := NewClient()
+
 	later := time.Now().Add(90 * time.Second)
 	earlier := time.Now().Add(30 * time.Second)
 
@@ -274,8 +280,7 @@ func TestGetRepository_404_ReturnsAPIError(t *testing.T) {
 }
 
 func TestGetRepository_InvalidBaseURL(t *testing.T) {
-	c := NewClient("", nil, nil, time.Duration(0), time.Duration(0))
-	c.BaseURL = "://invalid-url" // invalid format to force url.Parse to fail
+	c := NewClient(WithBaseURL("://invalid-url")) // invalid format to force url.Parse to fail
 
 	resp := c.GetRepository(context.Background(), "owner", "repo", "")
 	if resp.Error == nil {

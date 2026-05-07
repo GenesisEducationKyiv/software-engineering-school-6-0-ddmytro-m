@@ -41,11 +41,13 @@ func main() {
 	}()
 
 	ghClient := github.NewClient(
-		cfg.GitHub.Token,
-		&http.Client{Timeout: cfg.GitHub.Timeout},
-		redisClient,
-		cfg.GitHub.CacheTTL,
-		cfg.GitHub.CacheErrorTTL,
+		github.WithToken(cfg.GitHub.Token),
+		github.WithHTTPClient(&http.Client{Timeout: cfg.GitHub.Timeout}),
+		github.WithCache(
+			redisClient,
+			cfg.GitHub.CacheTTL,
+			cfg.GitHub.CacheErrorTTL,
+		),
 	)
 
 	emailMQ := mq.GetEmailMQ(redisClient)

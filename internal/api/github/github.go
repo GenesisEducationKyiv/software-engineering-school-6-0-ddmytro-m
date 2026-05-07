@@ -27,21 +27,67 @@ type Client struct {
 	lastLimits RateLimits
 }
 
-// NewClient creates a new Client with the provided configuration.
-func NewClient(token string, httpClient *http.Client, cache *redis.Client, cacheTTL time.Duration, cacheErrorTTL time.Duration) *Client {
-	return &Client{
+/*func NewClient(token string, httpClient *http.Client, cache *redis.Client, opts ...ClientOption) *Client {
+	c := &Client{
 		token: token,
 
 		httpClient: httpClient,
 		BaseURL:    "https://api.github.com",
 
 		cache:         cache,
-		cacheTTL:      cacheTTL,
-		cacheErrorTTL: cacheErrorTTL,
+		cacheTTL:      0,
+		cacheErrorTTL: 0,
 
 		mu:         sync.RWMutex{},
 		lastLimits: RateLimits{Limit: -1, Remaining: -1},
 	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
+}*/
+
+type Option func(*Client)
+
+func WithToken(token string) Option {
+	return func(c *Client) { c.token = token }
+}
+
+func WithBaseURL(baseURL string) Option {
+	return func(c *Client) { c.BaseURL = baseURL }
+}
+
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) { c.httpClient = httpClient }
+}
+
+func WithCache(client *redis.Client, ttl time.Duration, errorTTL time.Duration) Option {
+	return func(c *Client) {
+		c.cache = client
+		c.cacheTTL = ttl
+		c.cacheErrorTTL = errorTTL
+	}
+}
+
+func WithInitialRateLimits(limits RateLimits) Option {
+	return func(c *Client) { c.lastLimits = limits }
+}
+
+// NewClient creates a new Client with the provided options.
+func NewClient(opts ...Option) *Client {
+	c := &Client{
+		httpClient: http.DefaultClient,
+		BaseURL:    "https://api.github.com",
+		lastLimits: RateLimits{Limit: -1, Remaining: -1},
+	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
 }
 
 func (c *Client) getCachedRateLimits() RateLimits {
@@ -121,7 +167,7 @@ func get[T any](ctx context.Context, c *Client, path []string, etag string, cach
 
 	var data T
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return Response[T]{Error: &NetworkError{err}}
 	}
