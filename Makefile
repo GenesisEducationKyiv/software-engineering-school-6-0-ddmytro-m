@@ -1,5 +1,7 @@
 GO := go
 
+.PHONY: run run\:server build build\:server test test\:all test\:unit test\:integration lint lint\:fix
+
 run: run\:server
 
 run\:server:
@@ -23,6 +25,7 @@ test\:unit:
 
 test\:integration:
 	$(GO) test -v -tags="integration" ./...
+
 
 # Linter
 lint: .golangci.yml
