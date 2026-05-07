@@ -27,42 +27,25 @@ type Client struct {
 	lastLimits RateLimits
 }
 
-/*func NewClient(token string, httpClient *http.Client, cache *redis.Client, opts ...ClientOption) *Client {
-	c := &Client{
-		token: token,
-
-		httpClient: httpClient,
-		BaseURL:    "https://api.github.com",
-
-		cache:         cache,
-		cacheTTL:      0,
-		cacheErrorTTL: 0,
-
-		mu:         sync.RWMutex{},
-		lastLimits: RateLimits{Limit: -1, Remaining: -1},
-	}
-
-	for _, opt := range opts {
-		opt(c)
-	}
-
-	return c
-}*/
-
+// Option defines a functional configuration type for the GitHub Client.
 type Option func(*Client)
 
+// WithToken sets the GitHub personal access token for authentication.
 func WithToken(token string) Option {
 	return func(c *Client) { c.token = token }
 }
 
+// WithBaseURL overrides the default GitHub API base URL.
 func WithBaseURL(baseURL string) Option {
 	return func(c *Client) { c.BaseURL = baseURL }
 }
 
+// WithHTTPClient sets a custom http.Client for the GitHub client.
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) { c.httpClient = httpClient }
 }
 
+// WithCache configures a Redis-based cache for API responses.
 func WithCache(client *redis.Client, ttl time.Duration, errorTTL time.Duration) Option {
 	return func(c *Client) {
 		c.cache = client
@@ -71,6 +54,7 @@ func WithCache(client *redis.Client, ttl time.Duration, errorTTL time.Duration) 
 	}
 }
 
+// WithInitialRateLimits seeds the client with starting rate limit values.
 func WithInitialRateLimits(limits RateLimits) Option {
 	return func(c *Client) { c.lastLimits = limits }
 }
