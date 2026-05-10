@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"sync"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // Client provides a client for interacting with the GitHub API.
@@ -19,7 +17,7 @@ type Client struct {
 	httpClient *http.Client
 	BaseURL    string
 
-	cache         *redis.Client
+	cache         Cache
 	cacheTTL      time.Duration
 	cacheErrorTTL time.Duration
 
@@ -46,7 +44,7 @@ func WithHTTPClient(httpClient *http.Client) Option {
 }
 
 // WithCache configures a Redis-based cache for API responses.
-func WithCache(client *redis.Client, ttl time.Duration, errorTTL time.Duration) Option {
+func WithCache(client Cache, ttl time.Duration, errorTTL time.Duration) Option {
 	return func(c *Client) {
 		c.cache = client
 		c.cacheTTL = ttl
@@ -144,7 +142,7 @@ func get[T any](ctx context.Context, c *Client, path []string, etag string, cach
 	var cacheKey string
 	if cache && c.cache != nil {
 		cacheKey = c.getCacheKey(endpoint)
-		if resp, ok := tryGetCache[T](ctx, c, cacheKey); ok {
+		if resp, err := getCache[T](ctx, c.cache, cacheKey); err == nil {
 			return resp
 		}
 	}
@@ -181,7 +179,15 @@ func get[T any](ctx context.Context, c *Client, path []string, etag string, cach
 	}
 
 	if cache && c.cache != nil {
-		trySetCache(ctx, c, cacheKey, formattedResponse)
+		ttl := c.cacheTTL
+		if formattedResponse.Error != nil || formattedResponse.StatusCode >= 400 {
+			ttl = c.cacheErrorTTL
+		}
+
+		err = setCache(ctx, c.cache, cacheKey, formattedResponse, ttl)
+		if err != nil {
+			log.Printf("error setting cache: %v", err)
+		}
 	}
 
 	return formattedResponse

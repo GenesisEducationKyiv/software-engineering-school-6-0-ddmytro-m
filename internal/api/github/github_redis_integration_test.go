@@ -13,14 +13,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // Redis-GitHub API integration tests
 
-var testRedis *redis.Client
+var testCache Cache
+var testRedis *goredis.Client
 
 func TestMain(m *testing.M) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -32,6 +34,7 @@ func TestMain(m *testing.M) {
 	}
 
 	testRedis = client
+	testCache = redis.NewCacheWithClient(client)
 
 	code := m.Run()
 
@@ -43,16 +46,18 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func setupRedisContainer(ctx context.Context) (testcontainers.Container, *redis.Client, error) {
+func setupRedisContainer(ctx context.Context) (testcontainers.Container, *goredis.Client, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "redis:7-alpine",
 		ExposedPorts: []string{"6379/tcp"},
 		WaitingFor:   wait.ForListeningPort("6379/tcp"),
 	}
+
 	redisC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
 	})
+
 	if err != nil {
 		return nil, nil, err
 	}
@@ -62,12 +67,12 @@ func setupRedisContainer(ctx context.Context) (testcontainers.Container, *redis.
 		return nil, nil, err
 	}
 
-	client := redis.NewClient(&redis.Options{Addr: endpoint})
+	client := goredis.NewClient(&goredis.Options{Addr: endpoint})
 
 	return redisC, client, nil
 }
 
-func getCleanRedis(t *testing.T) *redis.Client {
+func getCleanRedis(t *testing.T) *goredis.Client {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
 	return testRedis
@@ -80,7 +85,7 @@ func TestGet_CacheHit(t *testing.T) {
 	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("HTTP server should not be called on cache hit")
 	})
-	c.cache = rc
+	c.cache = redis.NewCacheWithClient(rc)
 	c.cacheTTL = 1 * time.Minute
 
 	cachedResp := Response[LatestRelease]{
@@ -106,7 +111,7 @@ func TestGet_CacheMiss_SetsCache(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"tag_name":"v3.0.0"}`))
 	})
-	c.cache = rc
+	c.cache = redis.NewCacheWithClient(rc)
 	c.cacheTTL = 1 * time.Minute
 
 	// First call misses cache, hits server
@@ -147,7 +152,7 @@ func TestGet_CacheErrorTTL_On404(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte(`{"message":"Not Found"}`))
 	})
-	c.cache = rc
+	c.cache = redis.NewCacheWithClient(rc)
 	c.cacheErrorTTL = 1 * time.Minute
 
 	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
@@ -177,7 +182,7 @@ func TestGet_CacheErrorTTL_OnDefaultError(t *testing.T) {
 	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
-	c.cache = rc
+	c.cache = redis.NewCacheWithClient(rc)
 	c.cacheErrorTTL = 1 * time.Minute
 
 	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))

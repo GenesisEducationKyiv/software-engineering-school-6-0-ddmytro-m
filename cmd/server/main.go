@@ -14,7 +14,7 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
-	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 
 	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
@@ -32,7 +32,7 @@ func main() {
 	orm := db.Get()
 	defer db.Close()
 
-	redisClient := redisDB.Get()
+	redisClient := redis.Get()
 	defer func() {
 		err := redisClient.Close()
 		if err != nil {
@@ -40,11 +40,13 @@ func main() {
 		}
 	}()
 
+	cache := redis.NewCacheWithClient(redisClient)
+
 	ghClient := github.NewClient(
 		github.WithToken(cfg.GitHub.Token),
 		github.WithHTTPClient(&http.Client{Timeout: cfg.GitHub.Timeout}),
 		github.WithCache(
-			redisClient,
+			cache,
 			cfg.GitHub.CacheTTL,
 			cfg.GitHub.CacheErrorTTL,
 		),
@@ -55,7 +57,7 @@ func main() {
 
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
-	stream := redisDB.NewStream(redisClient, mq.DeliveryStream)
+	stream := redis.NewStream(redisClient, mq.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
 
 	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)

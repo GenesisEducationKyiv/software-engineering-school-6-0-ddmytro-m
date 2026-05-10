@@ -5,7 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 )
+
+// Cache defines the interface for the caching mechanism used by the GitHub client.
+type Cache interface {
+	Get(ctx context.Context, key string) ([]byte, error)
+	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+}
 
 type cachedResponse[T any] struct {
 	Data       T            `json:"Data"`
@@ -81,27 +88,20 @@ func (c *Client) getCacheKey(endpoint string) string {
 	return "github_cache:" + endpoint
 }
 
-func tryGetCache[T any](ctx context.Context, c *Client, cacheKey string) (Response[T], bool) {
-	if cached, err := c.cache.Get(ctx, cacheKey).Bytes(); err == nil {
+func getCache[T any](ctx context.Context, c Cache, cacheKey string) (Response[T], error) {
+	if cached, err := c.Get(ctx, cacheKey); err == nil {
 		var cr cachedResponse[T]
 		if err := json.Unmarshal(cached, &cr); err == nil {
-			return cr.toResponse(), true
+			return cr.toResponse(), nil
 		}
 	}
-	return Response[T]{}, false
+
+	return Response[T]{}, errors.New("cache miss")
 }
 
-func trySetCache[T any](ctx context.Context, c *Client, cacheKey string, r Response[T]) {
-	if r.StatusCode == 0 {
-		return
-	}
-
-	ttl := c.cacheTTL
-	if r.StatusCode != http.StatusOK && r.StatusCode != http.StatusNotModified {
-		ttl = c.cacheErrorTTL
-	}
-	if ttl == 0 {
-		return
+func setCache[T any](ctx context.Context, c Cache, cacheKey string, r Response[T], ttl time.Duration) error {
+	if r.StatusCode == 0 || ttl == 0 {
+		return nil
 	}
 
 	if r.StatusCode == http.StatusNotFound {
@@ -109,6 +109,8 @@ func trySetCache[T any](ctx context.Context, c *Client, cacheKey string, r Respo
 	}
 
 	if b, err := json.Marshal(toCached(r)); err == nil {
-		c.cache.Set(ctx, cacheKey, b, ttl)
+		return c.Set(ctx, cacheKey, b, ttl)
 	}
+
+	return nil
 }
