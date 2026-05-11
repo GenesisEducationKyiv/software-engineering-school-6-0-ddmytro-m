@@ -32,7 +32,7 @@ func main() {
 	orm := db.Get()
 	defer db.Close()
 
-	redisClient := redis.Get()
+	redisClient := redis.GetClient()
 	defer func() {
 		err := redisClient.Close()
 		if err != nil {
@@ -52,12 +52,12 @@ func main() {
 		),
 	)
 
-	emailMQ := mq.GetEmailMQ(redisClient)
-	scn := scanner.NewScanner(orm, ghClient, emailMQ, &cfg.Scanner)
+	stream := redis.NewStream(redisClient, mq.DeliveryStream)
+	emailMQ := mq.NewEmailMQ(stream)
 
+	scn := scanner.NewScanner(orm, ghClient, emailMQ, &cfg.Scanner)
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
-	stream := redis.NewStream(redisClient, mq.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
 
 	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)

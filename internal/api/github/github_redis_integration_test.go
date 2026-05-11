@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -23,6 +22,18 @@ import (
 
 var testCache Cache
 var testRedis *goredis.Client
+
+type redisCache struct {
+	client *goredis.Client
+}
+
+func (c *redisCache) Get(ctx context.Context, key string) ([]byte, error) {
+	return c.client.Get(ctx, key).Bytes()
+}
+
+func (c *redisCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	return c.client.Set(ctx, key, value, ttl).Err()
+}
 
 func TestMain(m *testing.M) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -34,7 +45,7 @@ func TestMain(m *testing.M) {
 	}
 
 	testRedis = client
-	testCache = redis.NewCacheWithClient(client)
+	testCache = &redisCache{client: client}
 
 	code := m.Run()
 
@@ -85,7 +96,7 @@ func TestGet_CacheHit(t *testing.T) {
 	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("HTTP server should not be called on cache hit")
 	})
-	c.cache = redis.NewCacheWithClient(rc)
+	c.cache = &redisCache{client: rc}
 	c.cacheTTL = 1 * time.Minute
 
 	cachedResp := Response[LatestRelease]{
@@ -111,7 +122,7 @@ func TestGet_CacheMiss_SetsCache(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"tag_name":"v3.0.0"}`))
 	})
-	c.cache = redis.NewCacheWithClient(rc)
+	c.cache = &redisCache{client: rc}
 	c.cacheTTL = 1 * time.Minute
 
 	// First call misses cache, hits server
@@ -152,7 +163,7 @@ func TestGet_CacheErrorTTL_On404(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte(`{"message":"Not Found"}`))
 	})
-	c.cache = redis.NewCacheWithClient(rc)
+	c.cache = &redisCache{client: rc}
 	c.cacheErrorTTL = 1 * time.Minute
 
 	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
@@ -182,7 +193,7 @@ func TestGet_CacheErrorTTL_OnDefaultError(t *testing.T) {
 	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
-	c.cache = redis.NewCacheWithClient(rc)
+	c.cache = &redisCache{client: rc}
 	c.cacheErrorTTL = 1 * time.Minute
 
 	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))

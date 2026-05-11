@@ -11,10 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
-	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 )
 
@@ -25,20 +22,20 @@ const (
 
 // Mailer consumes messages from a Redis stream and sends emails.
 type Mailer struct {
-	stream      *redisDB.Stream
+	stream      mq.Stream
 	group       string
 	workerCount int
-	msgQueue    chan redis.XMessage
+	msgQueue    chan mq.Message
 	smtpClient  *smtp.Client
 }
 
 // NewMailer creates a new Mailer instance.
-func NewMailer(stream *redisDB.Stream, group string, workerCount int, smtpClient *smtp.Client) *Mailer {
+func NewMailer(stream mq.Stream, group string, workerCount int, smtpClient *smtp.Client) *Mailer {
 	return &Mailer{
 		stream:      stream,
 		group:       group,
 		workerCount: workerCount,
-		msgQueue:    make(chan redis.XMessage, workerCount*2),
+		msgQueue:    make(chan mq.Message, workerCount*2),
 		smtpClient:  smtpClient,
 	}
 }
@@ -112,7 +109,7 @@ func (m *Mailer) reclaimStalePending(ctx context.Context, consumerName string) {
 func (m *Mailer) consume(ctx context.Context, consumerName string) {
 	messages, err := m.stream.ReadGroup(ctx, m.group, consumerName, 10, 2*time.Second)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, redis.Nil) {
+		if errors.Is(err, context.Canceled) {
 			return
 		}
 		log.Printf("mailer consumer: error reading from stream: %v", err)
@@ -149,17 +146,17 @@ func (m *Mailer) worker(ctx context.Context, id int) {
 	}
 }
 
-func (m *Mailer) processMessage(ctx context.Context, workerID int, message redis.XMessage) {
-	payloadStr, ok := message.Values["payload"].(string)
-	if !ok {
-		log.Printf("mailer worker %d: invalid payload format for message %s", workerID, message.ID)
+func (m *Mailer) processMessage(ctx context.Context, workerID int, message mq.Message) {
+	payload := message.Payload()
+	if len(payload) == 0 {
+		log.Printf("mailer worker %d: invalid payload format for message %s", workerID, message.ID())
 		m.deadLetter(ctx, workerID, message, "invalid payload format")
 		return
 	}
 
 	var msg mq.DeliveryMessage
-	if err := json.Unmarshal([]byte(payloadStr), &msg); err != nil {
-		log.Printf("mailer worker %d: failed to unmarshal payload %s: %v", workerID, message.ID, err)
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		log.Printf("mailer worker %d: failed to unmarshal payload %s: %v", workerID, message.ID(), err)
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("unmarshal error: %v", err))
 		return
 	}
@@ -169,13 +166,13 @@ func (m *Mailer) processMessage(ctx context.Context, workerID int, message redis
 	subject, body, known := m.buildEmail(msg)
 	if !known {
 		// Unknown event — acking silently would lose the message, dead-letter instead.
-		log.Printf("mailer worker %d: unknown event type %q for message %s", workerID, msg.Event, message.ID)
+		log.Printf("mailer worker %d: unknown event type %q for message %s", workerID, msg.Event, message.ID())
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("unknown event type: %q", msg.Event))
 		return
 	}
 
 	if m.smtpClient == nil {
-		log.Printf("mailer worker %d: smtp client is nil, cannot send message %s", workerID, message.ID)
+		log.Printf("mailer worker %d: smtp client is nil, cannot send message %s", workerID, message.ID())
 		m.deadLetter(ctx, workerID, message, "smtp client not configured")
 		return
 	}
@@ -183,13 +180,13 @@ func (m *Mailer) processMessage(ctx context.Context, workerID int, message redis
 	if err := m.sendWithRetry(ctx, workerID, msg.Email, subject, body); err != nil {
 		// All retries exhausted. Leave the message un-acked so XAUTOCLAIM
 		// can reassign it after the idle threshold, or dead-letter explicitly.
-		log.Printf("mailer worker %d: all retries exhausted for message %s, moving to dead-letter", workerID, message.ID)
+		log.Printf("mailer worker %d: all retries exhausted for message %s, moving to dead-letter", workerID, message.ID())
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("smtp retries exhausted: %v", err))
 		return
 	}
 
-	if err := m.stream.Ack(ctx, m.group, message.ID); err != nil {
-		log.Printf("mailer worker %d: failed to ack message %s: %v", workerID, message.ID, err)
+	if err := m.stream.Ack(ctx, m.group, message.ID()); err != nil {
+		log.Printf("mailer worker %d: failed to ack message %s: %v", workerID, message.ID(), err)
 	}
 }
 
@@ -245,21 +242,21 @@ func (m *Mailer) sendWithRetry(ctx context.Context, workerID int, email, subject
 
 // deadLetter acks the message out of the main stream and writes it to a
 // separate dead-letter stream for later inspection / manual replay.
-func (m *Mailer) deadLetter(ctx context.Context, workerID int, message redis.XMessage, reason string) {
+func (m *Mailer) deadLetter(ctx context.Context, workerID int, message mq.Message, reason string) {
 	dlPayload := map[string]any{
-		"original_id": message.ID,
+		"original_id": message.ID(),
 		"reason":      reason,
-		"payload":     message.Values["payload"],
+		"payload":     message.Payload(),
 		"failed_at":   time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if err := m.stream.PublishDeadLetter(ctx, dlPayload); err != nil {
-		log.Printf("mailer worker %d: failed to publish dead-letter for message %s: %v", workerID, message.ID, err)
+		log.Printf("mailer worker %d: failed to publish dead-letter for message %s: %v", workerID, message.ID(), err)
 		// Do not ack — leave in PEL so it can be inspected or reclaimed.
 		return
 	}
 
-	if err := m.stream.Ack(ctx, m.group, message.ID); err != nil {
-		log.Printf("mailer worker %d: failed to ack dead-lettered message %s: %v", workerID, message.ID, err)
+	if err := m.stream.Ack(ctx, m.group, message.ID()); err != nil {
+		log.Printf("mailer worker %d: failed to ack dead-lettered message %s: %v", workerID, message.ID(), err)
 	}
 }
