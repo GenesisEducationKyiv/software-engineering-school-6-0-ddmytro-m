@@ -39,10 +39,15 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *C
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
+	authTransport := NewAuthTransport(srv.Client().Transport, "test-token")
+	cacheTransport := NewCacheTransport(authTransport, nil, 0, 0)
+
+	httpClient := srv.Client()
+	httpClient.Transport = cacheTransport
+
 	c := NewClient(
-		WithToken("test-token"),
-		WithHTTPClient(srv.Client()),
 		WithBaseURL(srv.URL),
+		WithHTTPClient(httpClient),
 	)
 
 	return srv, c

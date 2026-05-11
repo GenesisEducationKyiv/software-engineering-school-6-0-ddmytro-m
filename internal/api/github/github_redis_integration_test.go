@@ -5,8 +5,10 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/signal"
 	"syscall"
@@ -89,91 +91,159 @@ func getCleanRedis(t *testing.T) *goredis.Client {
 	return testRedis
 }
 
-func TestGet_CacheHit(t *testing.T) {
+func TestCacheTransport_CacheHit(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("HTTP server should not be called on cache hit")
-	})
-	c.cache = &redisCache{client: rc}
-	c.cacheTTL = 1 * time.Minute
+	endpoint := "https://api.github.com/repos/owner/repo/releases/latest"
+	cacheKey := getCacheKey(endpoint)
 
-	cachedResp := Response[LatestRelease]{
-		Data:       LatestRelease{TagName: "v2.0.0"},
-		StatusCode: 200,
+	// Manually seed Redis with the raw HTTP response structure
+	cachedResp := cachedHTTPResponse{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       []byte(`{"tag_name":"v2.0.0"}`),
 	}
-	b, _ := json.Marshal(toCached(cachedResp))
-	rc.Set(ctx, "github_cache:"+srv.URL, b, c.cacheTTL)
+	b, err := json.Marshal(cachedResp)
+	if err != nil {
+		t.Fatalf("failed to marshal cached response: %v", err)
+	}
+	rc.Set(ctx, cacheKey, b, time.Minute)
 
-	resp := get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
-	if resp.Data.TagName != "v2.0.0" {
-		t.Errorf("expected TagName 'v2.0.0', got %q", resp.Data.TagName)
+	// Setup transport that FATALS if the network is hit
+	failTransport := &mockTransport{
+		roundTripFunc: func(req *http.Request) (*http.Response, error) {
+			t.Fatal("HTTP server should not be called on cache hit")
+			return nil, nil
+		},
+	}
+
+	transport := &CacheTransport{
+		Transport: failTransport,
+		Cache:     &redisCache{client: rc},
+		TTL:       time.Minute,
+	}
+	client := &http.Client{Transport: transport}
+
+	// Execute
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Assert
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	if string(bodyBytes) != `{"tag_name":"v2.0.0"}` {
+		t.Errorf("expected cached body, got %q", string(bodyBytes))
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
 }
 
-func TestGet_CacheMiss_SetsCache(t *testing.T) {
+func TestCacheTransport_CacheMiss_SetsCache(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
 	callCount := 0
-	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"tag_name":"v3.0.0"}`))
-	})
-	c.cache = &redisCache{client: rc}
-	c.cacheTTL = 1 * time.Minute
+	}))
+	defer srv.Close()
+
+	transport := &CacheTransport{
+		Transport: http.DefaultTransport,
+		Cache:     &redisCache{client: rc},
+		TTL:       time.Minute,
+	}
+	client := &http.Client{Transport: transport}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// First call misses cache, hits server
-	resp := get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
-	if resp.Data.TagName != "v3.0.0" {
-		t.Errorf("expected TagName 'v3.0.0', got %q", resp.Data.TagName)
+	resp1, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+	defer resp1.Body.Close()
+
 	if callCount != 1 {
 		t.Errorf("expected 1 HTTP call, got %d", callCount)
 	}
 
-	// Verify it was set in Redis
-	cachedData, err := rc.Get(ctx, "github_cache:"+srv.URL).Bytes()
+	// Verify it was set in Redis as a cachedHTTPResponse
+	cachedData, err := rc.Get(ctx, getCacheKey(srv.URL)).Bytes()
 	if err != nil {
 		t.Fatalf("failed to get cache: %v", err)
 	}
-	var cachedResp cachedResponse[LatestRelease]
+	var cachedResp cachedHTTPResponse
 	if err := json.Unmarshal(cachedData, &cachedResp); err != nil {
 		t.Fatalf("failed to unmarshal cache: %v", err)
 	}
-	if cachedResp.Data.TagName != "v3.0.0" {
-		t.Errorf("cached TagName mismatch: got %q", cachedResp.Data.TagName)
+	if string(cachedResp.Body) != `{"tag_name":"v3.0.0"}` {
+		t.Errorf("cached Body mismatch: got %q", string(cachedResp.Body))
 	}
 
-	// Second call hits cache, no extra HTTP call
-	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
+	// Second call hits cache
+	resp2, _ := client.Do(req)
+	resp2.Body.Close()
+
 	if callCount != 1 {
 		t.Errorf("expected 1 HTTP call after cache hit, got %d", callCount)
 	}
 }
 
-func TestGet_CacheErrorTTL_On404(t *testing.T) {
+func TestCacheTransport_CacheErrorTTL_On404(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"some-etag"`)
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte(`{"message":"Not Found"}`))
-	})
-	c.cache = &redisCache{client: rc}
-	c.cacheErrorTTL = 1 * time.Minute
+	}))
+	defer srv.Close()
 
-	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
-
-	// Verify it was set in Redis with an empty ETag logic
-	cachedData, err := rc.Get(ctx, "github_cache:"+srv.URL).Bytes()
-	if err != nil {
-		t.Fatalf("expected 404 response to be cached: %v", err)
+	transport := &CacheTransport{
+		Transport: http.DefaultTransport,
+		Cache:     &redisCache{client: rc},
+		TTL:       time.Minute,
+		ErrorTTL:  10 * time.Minute,
 	}
-	var cachedResp cachedResponse[LatestRelease]
+	client := &http.Client{Transport: transport}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	// Verify it was set in Redis
+	cachedData, err := rc.Get(ctx, getCacheKey(srv.URL)).Bytes()
+	if err != nil {
+		t.Fatalf("expected 404 response to be cached (ensure cache.go doesn't block errors!): %v", err)
+	}
+
+	var cachedResp cachedHTTPResponse
 	if err := json.Unmarshal(cachedData, &cachedResp); err != nil {
 		t.Fatalf("failed to unmarshal cache: %v", err)
 	}
@@ -181,28 +251,42 @@ func TestGet_CacheErrorTTL_On404(t *testing.T) {
 	if cachedResp.StatusCode != 404 {
 		t.Errorf("expected cached status 404, got %d", cachedResp.StatusCode)
 	}
-	if cachedResp.ETag != "" {
-		t.Errorf("expected empty ETag on cached 404, got %q", cachedResp.ETag)
-	}
 }
 
-func TestGet_CacheErrorTTL_OnDefaultError(t *testing.T) {
+func TestCacheTransport_CacheErrorTTL_OnDefaultError(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	srv, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-	})
-	c.cache = &redisCache{client: rc}
-	c.cacheErrorTTL = 1 * time.Minute
+		w.Write([]byte(`{"message":"Server Error"}`))
+	}))
+	defer srv.Close()
 
-	get(ctx, c, []string{}, "", true, CreateStatusHandler(jsonDecoder[LatestRelease]))
-
-	cachedData, err := rc.Get(ctx, "github_cache:"+srv.URL).Bytes()
-	if err != nil {
-		t.Fatalf("expected error response to be cached: %v", err)
+	transport := &CacheTransport{
+		Transport: http.DefaultTransport,
+		Cache:     &redisCache{client: rc},
+		TTL:       time.Minute,
+		ErrorTTL:  10 * time.Minute,
 	}
-	var cachedResp cachedResponse[LatestRelease]
+	client := &http.Client{Transport: transport}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	cachedData, err := rc.Get(ctx, getCacheKey(srv.URL)).Bytes()
+	if err != nil {
+		t.Fatalf("expected 500 response to be cached: %v", err)
+	}
+
+	var cachedResp cachedHTTPResponse
 	if err := json.Unmarshal(cachedData, &cachedResp); err != nil {
 		t.Fatalf("failed to unmarshal cache: %v", err)
 	}

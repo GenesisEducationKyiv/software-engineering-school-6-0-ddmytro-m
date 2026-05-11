@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -99,7 +100,11 @@ func (s *Stream) ReadGroup(ctx context.Context, group, consumer string, count in
 		Count:    count,
 		Block:    block,
 	}).Result()
+
 	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if len(res) == 0 {

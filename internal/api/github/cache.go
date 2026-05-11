@@ -1,9 +1,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"time"
 )
@@ -84,10 +87,6 @@ func (cr cachedResponse[T]) toResponse() Response[T] {
 	return r
 }
 
-func (c *Client) getCacheKey(endpoint string) string {
-	return "github_cache:" + endpoint
-}
-
 func getCache[T any](ctx context.Context, c Cache, cacheKey string) (Response[T], error) {
 	if cached, err := c.Get(ctx, cacheKey); err == nil {
 		var cr cachedResponse[T]
@@ -113,4 +112,96 @@ func setCache[T any](ctx context.Context, c Cache, cacheKey string, r Response[T
 	}
 
 	return nil
+}
+
+// cachedHTTPResponse represents the raw HTTP data we store in the cache.
+type cachedHTTPResponse struct {
+	StatusCode int         `json:"status_code"`
+	Header     http.Header `json:"header"`
+	Body       []byte      `json:"body"`
+}
+
+// CacheTransport handles checking a cache before making a network request.
+type CacheTransport struct {
+	Transport http.RoundTripper
+	Cache     Cache
+	TTL       time.Duration
+	ErrorTTL  time.Duration
+}
+
+// NewCacheTransport creates a new CacheTransport with the provided configuration.
+func NewCacheTransport(transport http.RoundTripper, cache Cache, ttl, errorTTL time.Duration) *CacheTransport {
+	return &CacheTransport{
+		Transport: transport,
+		Cache:     cache,
+		TTL:       ttl,
+		ErrorTTL:  errorTTL,
+	}
+}
+
+func getCacheKey(endpoint string) string {
+	return "github_cache:" + endpoint
+}
+
+func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	cacheKey := getCacheKey(req.URL.String())
+
+	if t.Cache != nil {
+		if cachedBytes, err := t.Cache.Get(ctx, cacheKey); err == nil {
+			var cached cachedHTTPResponse
+			if err := json.Unmarshal(cachedBytes, &cached); err == nil {
+				// Reconstruct and return the cached *http.Response
+				return &http.Response{
+					StatusCode: cached.StatusCode,
+					Header:     cached.Header,
+					Body:       io.NopCloser(bytes.NewReader(cached.Body)),
+					Request:    req,
+				}, nil
+			}
+		}
+	}
+
+	// Fallback to default transport if miss
+	transport := t.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the response
+	if t.Cache != nil && req.Method == http.MethodGet {
+		// Read the body entirely so we can cache it
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		// Restore the body for the original caller since we drained it
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		cached := cachedHTTPResponse{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+			Body:       bodyBytes,
+		}
+
+		if b, err := json.Marshal(cached); err == nil {
+			ttl := t.TTL
+			if resp.StatusCode >= 400 {
+				ttl = t.ErrorTTL
+			}
+
+			err = t.Cache.Set(ctx, cacheKey, b, ttl)
+			if err != nil {
+				log.Printf("cache transport: failed to set cache for %s: %v", cacheKey, err)
+			}
+		}
+	}
+
+	return resp, nil
 }

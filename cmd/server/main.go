@@ -42,20 +42,26 @@ func main() {
 
 	cache := redis.NewCacheWithClient(redisClient)
 
+	// GitHub API transport layers
+	transport := http.DefaultTransport
+
+	authTransport := github.NewAuthTransport(transport, cfg.GitHub.Token)
+	rateLimitTransport := github.NewRateLimitTransport(authTransport, github.GetBaseRateLimits(cfg.GitHub.Token))
+	cacheTransport := github.NewCacheTransport(rateLimitTransport, cache, cfg.GitHub.CacheTTL, cfg.GitHub.CacheErrorTTL)
+
+	httpClient := &http.Client{
+		Transport: cacheTransport,
+		Timeout:   cfg.GitHub.Timeout,
+	}
+
 	ghClient := github.NewClient(
-		github.WithToken(cfg.GitHub.Token),
-		github.WithHTTPClient(&http.Client{Timeout: cfg.GitHub.Timeout}),
-		github.WithCache(
-			cache,
-			cfg.GitHub.CacheTTL,
-			cfg.GitHub.CacheErrorTTL,
-		),
+		github.WithHTTPClient(httpClient),
 	)
 
 	stream := redis.NewStream(redisClient, mq.DeliveryStream)
 	emailMQ := mq.NewEmailMQ(stream)
 
-	scn := scanner.NewScanner(orm, ghClient, emailMQ, &cfg.Scanner)
+	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
 	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
