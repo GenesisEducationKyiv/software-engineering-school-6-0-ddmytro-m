@@ -31,7 +31,7 @@ Instead of a fixed interval, the scanner dynamically adjusts its speed:
 
 - **Recovery Logic**: On startup, the scanner runs a recover() function to reset any repositories stuck in the processing state (likely due to a previous crash).
 - **Transactional Updates**: We use a DB transaction to "claim" a batch of repositories, moving them from idle to processing atomically to ensure no two worker instances process the same repo.
-- **Stale Data Handling**: If a repository ID changes (rename/transfer) or is deleted, the scanner triggers a notification to users and soft-deletes the stale record.
+- **Stale Data Handling**: If response from the server and recorded repo ids mismatch, users are notified that repo has been moved (and another repo took its place). Premature notifications are omitted to prevent notifications about visibility changes (and following unsubscriptions) 
 
 ## Consequences
 
