@@ -36,7 +36,7 @@ Instead of a fixed interval, the scanner dynamically adjusts its speed:
 ## Consequences
 
 ### Pros
-- **High Throughput**: Concurrent workers allow us to process thousands of repositories quickly.
+- **High Throughput**: Concurrent workers allow us to process lots of repositories quickly.
 - **API Compliance**: Dynamic calculation minimizes the risk of being blocked by GitHub.
 - **Low Overhead**: ETags significantly reduce the data processing load.
 - **Crash Recovery**: The system is self-healing after a restart.
