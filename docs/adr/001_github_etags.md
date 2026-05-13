@@ -20,7 +20,7 @@ The `github.Client` will accept an `etag` parameter in its primary data-fetching
 - If an ETag is provided, the client must include the `If-None-Match` header in the outgoing HTTP request.
 - The response wrapper (`Response[T]`) will capture the ETag header from the GitHub response and return it to the caller for persistence.
 
-### 2. Status Code Handling
+### 2. Successful Status Code Handling
 The client's internal `get` function and response handlers must explicitly distinguish between:
 - **200 OK**: Full payload received; update the stored ETag and process data.
 - **304 Not Modified**: Resource is unchanged; skip decoding and notify the caller that existing local data is still valid.
