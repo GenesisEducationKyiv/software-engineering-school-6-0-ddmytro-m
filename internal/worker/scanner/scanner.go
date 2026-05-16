@@ -16,12 +16,20 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 )
 
+// RateLimitProvider gives a method to get current rate limits regardless of internal implementation
+type RateLimitProvider interface {
+	GetRateLimits() github.RateLimits
+}
+
 // Scanner periodically checks repositories for updates.
 type Scanner struct {
-	db       *gorm.DB
-	gh       *github.Client
+	db *gorm.DB
+	gh *github.Client
+
 	notifier Notifier
 	limiter  *rate.Limiter
+
+	rlp RateLimitProvider
 
 	repoQueue chan db.Repository
 	queueSize int
@@ -34,7 +42,7 @@ type Scanner struct {
 }
 
 // NewScanner creates a new Scanner instance.
-func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, config *config.ScannerConfig) *Scanner {
+func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp RateLimitProvider, config *config.ScannerConfig) *Scanner {
 	limiter := rate.NewLimiter(rate.Limit(1), 1)
 
 	return &Scanner{
@@ -42,6 +50,8 @@ func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, config
 		gh:       ghClient,
 		notifier: notifier,
 		limiter:  limiter,
+
+		rlp: rlp,
 
 		repoQueue: make(chan db.Repository, config.QueueSize),
 		queueSize: config.QueueSize,
@@ -99,7 +109,10 @@ func (s *Scanner) recover() {
 }
 
 func (s *Scanner) produce(ctx context.Context) {
-	limits := s.gh.GetRateLimits(ctx)
+	var limits github.RateLimits
+	if s.rlp != nil {
+		limits = s.rlp.GetRateLimits()
+	}
 	now := time.Now()
 
 	log.Print("checking rate limits...")
@@ -111,7 +124,7 @@ func (s *Scanner) produce(ctx context.Context) {
 	}
 
 	if !limits.IsValid() {
-		limits = s.gh.GetBaseRateLimits()
+		limits = github.GetUnauthenticatedRateLimits() // scanner implies the lack of token by default
 	}
 
 	timeUntilReset := time.Until(limits.ResetAt).Seconds()
@@ -260,8 +273,10 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 	switch releaseResp.StatusCode {
 	case 200:
 		if releaseResp.Data.TagName != repo.LastRelease.TagName {
+			log.Printf("new release for %s/%s: %s", repo.Owner, repo.Name, releaseResp.Data.TagName)
 			s.handleNewRelease(repo, &releaseResp.Data)
 			repo.LastRelease.TagName = releaseResp.Data.TagName
+			repo.LastRelease.GitHubID = releaseResp.Data.ID
 		}
 		repo.LastRelease.ETag = releaseResp.ETag
 

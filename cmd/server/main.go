@@ -14,7 +14,7 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
-	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 
 	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
@@ -32,7 +32,7 @@ func main() {
 	orm := db.Get()
 	defer db.Close()
 
-	redisClient := redisDB.Get()
+	redisClient := redis.GetClient()
 	defer func() {
 		err := redisClient.Close()
 		if err != nil {
@@ -40,22 +40,30 @@ func main() {
 		}
 	}()
 
+	cache := redis.NewCacheWithClient(redisClient)
+
+	// GitHub API transport layers
+	transport := http.DefaultTransport
+
+	authTransport := github.NewAuthTransport(transport, cfg.GitHub.Token)
+	rateLimitTransport := github.NewRateLimitTransport(authTransport, github.GetBaseRateLimits(cfg.GitHub.Token))
+	cacheTransport := github.NewCacheTransport(rateLimitTransport, cache, cfg.GitHub.CacheTTL, cfg.GitHub.CacheErrorTTL)
+
+	httpClient := &http.Client{
+		Transport: cacheTransport,
+		Timeout:   cfg.GitHub.Timeout,
+	}
+
 	ghClient := github.NewClient(
-		github.WithToken(cfg.GitHub.Token),
-		github.WithHTTPClient(&http.Client{Timeout: cfg.GitHub.Timeout}),
-		github.WithCache(
-			redisClient,
-			cfg.GitHub.CacheTTL,
-			cfg.GitHub.CacheErrorTTL,
-		),
+		github.WithHTTPClient(httpClient),
 	)
 
-	emailMQ := mq.GetEmailMQ(redisClient)
-	scn := scanner.NewScanner(orm, ghClient, emailMQ, &cfg.Scanner)
+	stream := redis.NewStream(redisClient, mq.DeliveryStream)
+	emailMQ := mq.NewEmailMQ(stream)
 
+	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
-	stream := redisDB.NewStream(redisClient, mq.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
 
 	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)

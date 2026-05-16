@@ -3,13 +3,9 @@ package mq
 
 import (
 	"context"
-	"sync"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
-	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
-
-	"github.com/redis/go-redis/v9"
 )
 
 // DeliveryStream is the Redis stream used for sending email delivery messages.
@@ -34,35 +30,26 @@ type DeliveryMessage struct {
 	Payload map[string]any `json:"payload,omitempty"`
 }
 
-// EmailMQ is an implementation of a message queue for sending emails.
-type EmailMQ struct {
-	stream *redisDB.Stream
+// Publisher defines the contract for publishing messages.
+type Publisher interface {
+	Publish(ctx context.Context, msg any) error
 }
 
-var (
-	instance *EmailMQ
-	once     sync.Once
-)
+// EmailMQ is an implementation of a message queue for sending emails.
+type EmailMQ struct {
+	publisher Publisher
+}
 
-// GetEmailMQ returns a singleton instance of EmailMQ.
-func GetEmailMQ(client *redis.Client) *EmailMQ {
-	once.Do(func() {
-		stream := redisDB.NewStream(client, DeliveryStream)
-		if stream == nil {
-			return
-		}
-
-		instance = &EmailMQ{
-			stream: stream,
-		}
-	})
-
-	return instance
+// NewEmailMQ creates a new EmailMQ instance via Dependency Injection.
+func NewEmailMQ(publisher Publisher) *EmailMQ {
+	return &EmailMQ{
+		publisher: publisher,
+	}
 }
 
 // SendNewRelease sends an email notification about a new release.
 func (mq *EmailMQ) SendNewRelease(sub *db.Subscription, repo *db.Repository, release *github.LatestRelease) error {
-	return mq.stream.Publish(context.Background(), DeliveryMessage{
+	return mq.publisher.Publish(context.Background(), DeliveryMessage{
 		Event:   EventNewRelease,
 		Email:   sub.Email,
 		Repo:    repo.Owner + "/" + repo.Name,
@@ -72,7 +59,7 @@ func (mq *EmailMQ) SendNewRelease(sub *db.Subscription, repo *db.Repository, rel
 
 // SendRepoMoved sends an email notification about a moved or renamed repository.
 func (mq *EmailMQ) SendRepoMoved(sub *db.Subscription, repo *db.Repository) error {
-	return mq.stream.Publish(context.Background(), DeliveryMessage{
+	return mq.publisher.Publish(context.Background(), DeliveryMessage{
 		Event: EventRepoMoved,
 		Email: sub.Email,
 		Repo:  repo.Owner + "/" + repo.Name,
@@ -81,7 +68,7 @@ func (mq *EmailMQ) SendRepoMoved(sub *db.Subscription, repo *db.Repository) erro
 
 // SendEmailVerification sends an email verification link to a user.
 func (mq *EmailMQ) SendEmailVerification(email, token string) error {
-	return mq.stream.Publish(context.Background(), DeliveryMessage{
+	return mq.publisher.Publish(context.Background(), DeliveryMessage{
 		Event: EventEmailVerification,
 		Email: email,
 		Payload: map[string]any{
