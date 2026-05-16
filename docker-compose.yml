@@ -1,5 +1,7 @@
 services:
   app:
+    profiles:
+      - app
     build:
       context: .
       dockerfile: Dockerfile
@@ -37,6 +39,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  test:
+    profiles:
+      - test
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    command: go test -v -tags="unit,integration" ./...
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   postgres:
     image: postgres:16-alpine

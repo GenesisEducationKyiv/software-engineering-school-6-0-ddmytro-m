@@ -29,20 +29,11 @@ make run
 
 ### Docker
 ```shell
-docker compose --env-file .env up -d
+docker compose --env-file .env up app -d
 ```
 
 ## Testing
-```shell
-make test
-```
-
-### Run specific tests
-integration tests require docker installation.
-```shell
-make test:unit
-make test:integration
-```
+see [testing.md](testing.md)
 
 ## Linting
 ```shell
