@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// RateLimits holds the current state of GitHub API usage limits and reset times.
 type RateLimits struct {
 	Limit      int64
 	Remaining  int64
@@ -65,7 +66,7 @@ func (t *RateLimitTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return res, nil
 }
 
-// GetLimits allows the application to safely read the most recently observed limits.
+// GetRateLimits allows the application to safely read the most recently observed limits.
 func (t *RateLimitTransport) GetRateLimits() RateLimits {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

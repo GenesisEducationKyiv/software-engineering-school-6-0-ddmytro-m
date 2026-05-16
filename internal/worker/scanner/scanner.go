@@ -16,6 +16,7 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 )
 
+// RateLimitProvider gives a method to get current rate limits regardless of internal implementation
 type RateLimitProvider interface {
 	GetRateLimits() github.RateLimits
 }

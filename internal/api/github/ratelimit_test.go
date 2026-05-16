@@ -10,15 +10,6 @@ import (
 	"time"
 )
 
-// mockTransport lets us intercept the RoundTrip to simulate GitHub responses
-type mockTransport struct {
-	roundTripFunc func(req *http.Request) (*http.Response, error)
-}
-
-func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return m.roundTripFunc(req)
-}
-
 func TestRateLimitTransport_StoresValidLimits(t *testing.T) {
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 
