@@ -29,10 +29,8 @@ func main() {
 	defer stop()
 
 	cfg := config.Get()
-	
-	if err := logger.InitLogger(os.Getenv("LOG_LEVEL")); err != nil {
-		panic(err)
-	}
+
+	logger.InitLogger(os.Getenv("ELASTICSEARCH_URL"), "github-scanner-logs")
 	defer logger.Sync()
 
 	orm := db.Get()

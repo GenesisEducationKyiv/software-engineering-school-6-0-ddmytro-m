@@ -1,36 +1,43 @@
 package logger
 
 import (
+	"fmt"
 	"os"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
+// Log is the global logger instance used throughout the application.
 var Log *zap.Logger
 
-func InitLogger(level string) error {
-	var zapLevel zapcore.Level
-	if err := zapLevel.UnmarshalText([]byte(level)); err != nil {
-		zapLevel = zapcore.InfoLevel // Default to info
+// InitLogger initializes the global logger with both console and optional Elasticsearch outputs.
+// It configures JSON encoding and sets appropriate log levels for each output.
+func InitLogger(esURL, indexName string) {
+	encoderConfig := zap.NewProductionEncoderConfig()
+	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder // Читаємий формат часу для Elastic
+	jsonEncoder := zapcore.NewJSONEncoder(encoderConfig)
+
+	consoleSyncer := zapcore.Lock(os.Stdout)
+
+	elasticSyncer, err := NewElasticSyncer(esURL, indexName)
+	if err != nil {
+		fmt.Printf("ElasticSyncer is offline: %v. Logging only in console.\n", err)
 	}
 
-	encoderConfig := zap.NewProductionEncoderConfig()
-	encoderConfig.TimeKey = "timestamp"
-	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	var cores []zapcore.Core
 
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(encoderConfig),
-		zapcore.AddSync(os.Stdout),
-		zapLevel,
-	)
+	cores = append(cores, zapcore.NewCore(jsonEncoder, consoleSyncer, zap.DebugLevel))
 
-	Log = zap.New(core, zap.AddCaller())
-	zap.ReplaceGlobals(Log)
+	if elasticSyncer != nil {
+		cores = append(cores, zapcore.NewCore(jsonEncoder, elasticSyncer, zap.InfoLevel))
+	}
 
-	return nil
+	combinedCore := zapcore.NewTee(cores...)
+	Log = zap.New(combinedCore, zap.AddCaller(), zap.AddStacktrace(zap.ErrorLevel))
 }
 
+// Sync flushes any buffered log entries. It should be called before the application exits.
 func Sync() {
 	if Log != nil {
 		_ = Log.Sync()

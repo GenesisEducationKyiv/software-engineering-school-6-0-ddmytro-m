@@ -31,12 +31,15 @@ services:
       - SMTP_USER
       - SMTP_PASS
       - SMTP_FROM
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
 
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy   
 
   postgres:
     image: postgres:16-alpine
