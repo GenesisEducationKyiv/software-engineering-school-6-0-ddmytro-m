@@ -1,3 +1,4 @@
+// Package logger provides logging functionality with support for multiple outputs including Elasticsearch.
 package logger
 
 import (

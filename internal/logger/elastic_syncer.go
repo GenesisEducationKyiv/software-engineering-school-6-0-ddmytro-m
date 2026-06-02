@@ -43,7 +43,11 @@ func (s *ElasticSyncer) Write(p []byte) (n int, err error) {
 			fmt.Printf("Error sending log to Elastic: %v\n", err)
 			return
 		}
-		defer res.Body.Close()
+		defer func() {
+			if closeErr := res.Body.Close(); closeErr != nil {
+				fmt.Printf("Error closing Elastic response body: %v\n", closeErr)
+			}
+		}()
 
 		if res.IsError() {
 			fmt.Printf("Elastic returned an error: %s\n", res.String())

@@ -6,8 +6,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	"go.uber.org/zap"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // GetEnv retrieves the value of the environment variable named by the key.

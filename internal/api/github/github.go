@@ -8,9 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // Client provides a client for interacting with the GitHub API.
