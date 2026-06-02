@@ -2,7 +2,6 @@
 package db
 
 import (
-	"log"
 	"sync"
 	"time"
 
@@ -10,6 +9,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
+	"go.uber.org/zap"
 )
 
 // Release represents the latest release information for a repository.
@@ -99,14 +100,14 @@ func Close() {
 	if instance != nil {
 		sqlDB, err := instance.DB()
 		if err != nil {
-			log.Printf("error getting underlying sql.DB: %v", err)
+			logger.Log.Error("error getting underlying sql.DB", zap.Error(err))
 			return
 		}
 
 		if err := sqlDB.Close(); err != nil {
-			log.Printf("error closing database: %v", err)
+			logger.Log.Error("error closing database", zap.Error(err))
 		} else {
-			log.Println("database connection closed.")
+			logger.Log.Info("database connection closed")
 		}
 	}
 }

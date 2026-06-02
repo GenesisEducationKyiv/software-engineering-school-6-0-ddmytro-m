@@ -3,17 +3,18 @@ package scanner
 
 import (
 	"context"
-	"log"
 	"math"
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // Scanner periodically checks repositories for updates.
@@ -69,7 +70,7 @@ func (s *Scanner) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.producerInterval)
 	defer ticker.Stop()
 
-	log.Printf("scanner online: %d workers, min interval %v", s.workerCount, s.minCheckInterval)
+	logger.Log.Info("scanner online", zap.Int("workers", s.workerCount), zap.Duration("min_interval", s.minCheckInterval))
 	s.produce(ctx)
 
 	for {
@@ -85,7 +86,7 @@ func (s *Scanner) Start(ctx context.Context) {
 }
 
 func (s *Scanner) recover() {
-	log.Println("Recovering stuck repositories...")
+	logger.Log.Info("Recovering stuck repositories...")
 
 	err := s.db.Model(&db.Repository{}).
 		Where("status = ?", "processing").
@@ -94,7 +95,7 @@ func (s *Scanner) recover() {
 		}).Error
 
 	if err != nil {
-		log.Printf("Recovery error: %v", err)
+		logger.Log.Error("Recovery error", zap.Error(err))
 	}
 }
 
@@ -102,10 +103,10 @@ func (s *Scanner) produce(ctx context.Context) {
 	limits := s.gh.GetRateLimits(ctx)
 	now := time.Now()
 
-	log.Print("checking rate limits...")
+	logger.Log.Info("checking rate limits...")
 
 	if now.Before(limits.RetryAfter) {
-		log.Print("secondary rate limits hit, hibernating...")
+		logger.Log.Warn("secondary rate limits hit, hibernating...")
 		s.limiter.SetLimit(0)
 		return
 	}
@@ -125,7 +126,7 @@ func (s *Scanner) produce(ctx context.Context) {
 	var rps float64
 	if usable <= 0 {
 		rps = 0
-		log.Printf("primary rate limit low (%d/%d). hibernating...", limits.Remaining, limits.Limit)
+		logger.Log.Warn("primary rate limit low, hibernating...", zap.Int64("remaining", limits.Remaining), zap.Int64("limit", limits.Limit))
 	} else {
 		rps = usable / timeUntilReset
 		// don't exceed 10 RPS to avoid GitHub Secondary Limits
@@ -160,11 +161,11 @@ func (s *Scanner) produce(ctx context.Context) {
 			return err
 		}
 		if len(ids) == 0 {
-			log.Print("no repositories to scan")
+			logger.Log.Info("no repositories to scan")
 			return nil
 		}
 
-		log.Printf("found %d repositories to scan", len(ids))
+		logger.Log.Info("found repositories to scan", zap.Int("count", len(ids)))
 
 		return tx.Model(&db.Repository{}).
 			Where("id IN ?", ids).
@@ -175,7 +176,7 @@ func (s *Scanner) produce(ctx context.Context) {
 	})
 
 	if err != nil {
-		log.Printf("producer db error: %v", err)
+		logger.Log.Error("producer db error", zap.Error(err))
 		return
 	}
 
@@ -195,19 +196,19 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("worker %d shutting down", id)
+			logger.Log.Info("worker shutting down", zap.Int("worker_id", id))
 			return
 		case r, ok := <-s.repoQueue:
 			if !ok {
-				log.Printf("worker %d shutting down", id)
+				logger.Log.Info("worker shutting down", zap.Int("worker_id", id))
 				return
 			}
 
 			if err := s.limiter.Wait(ctx); err != nil {
-				log.Printf("worker %d: limiter wait error: %v", id, err)
+				logger.Log.Error("worker limiter wait error", zap.Int("worker_id", id), zap.Error(err))
 				return
 			}
-			log.Printf("worker %d: processing %s/%s", id, r.Owner, r.Name)
+			logger.Log.Info("worker processing repo", zap.Int("worker_id", id), zap.String("owner", r.Owner), zap.String("name", r.Name))
 			s.processRepo(ctx, &r)
 		}
 	}
@@ -230,7 +231,7 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 	switch repoResp.StatusCode {
 	case 200:
 		if repoResp.Data.ID != repo.GitHubID {
-			log.Printf("repo ID mismatch for %s/%s: stored %d, got %d — skipping", repo.Owner, repo.Name, repo.GitHubID, repoResp.Data.ID)
+			logger.Log.Warn("repo ID mismatch — skipping", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Int64("stored_id", repo.GitHubID), zap.Int64("got_id", repoResp.Data.ID))
 			s.handleRepoMoved(repo)
 			return
 		}
@@ -240,17 +241,17 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 		// identity confirmed via ETag, proceed
 
 	case 404:
-		log.Printf("repo %s/%s no longer exists — skipping", repo.Owner, repo.Name)
+		logger.Log.Warn("repo no longer exists — skipping", zap.String("owner", repo.Owner), zap.String("name", repo.Name))
 		return
 
 	case 403, 429:
 		s.limiter.SetLimit(0)
-		log.Printf("critical limit hit on repo check (%d). limiter frozen.", repoResp.StatusCode)
+		logger.Log.Error("critical limit hit on repo check. limiter frozen.", zap.Int("status_code", repoResp.StatusCode))
 		return
 
 	default:
 		if repoResp.Error != nil {
-			log.Printf("error checking repo %s/%s: %v", repo.Owner, repo.Name, repoResp.Error)
+			logger.Log.Error("error checking repo", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(repoResp.Error))
 		}
 		return
 	}
@@ -273,11 +274,11 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 
 	case 403, 429:
 		s.limiter.SetLimit(0)
-		log.Printf("critical limit hit (%d). limiter frozen.", releaseResp.StatusCode)
+		logger.Log.Error("critical limit hit. limiter frozen.", zap.Int("status_code", releaseResp.StatusCode))
 
 	default:
 		if releaseResp.Error != nil {
-			log.Printf("error while getting latest release: %s", releaseResp.Error.Error())
+			logger.Log.Error("error while getting latest release", zap.Error(releaseResp.Error))
 		}
 	}
 }
@@ -285,13 +286,13 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 func (s *Scanner) handleNewRelease(repo *db.Repository, latestRelease *github.LatestRelease) {
 	var subs []db.Subscription
 	if err := s.db.Where("repository_id = ? AND status = ?", repo.ID, db.StatusActive).Find(&subs).Error; err != nil {
-		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("error finding active subscriptions", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		return
 	}
 
 	for _, sub := range subs {
 		if err := s.notifier.SendNewRelease(&sub, repo, latestRelease); err != nil {
-			log.Printf("failed to notify %s for %s/%s: %v", sub.Email, repo.Owner, repo.Name, err)
+			logger.Log.Error("failed to notify user", zap.String("email", sub.Email), zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}
 }
@@ -299,23 +300,23 @@ func (s *Scanner) handleNewRelease(repo *db.Repository, latestRelease *github.La
 func (s *Scanner) handleRepoMoved(repo *db.Repository) {
 	var subs []db.Subscription
 	if err := s.db.Where("repository_id = ? AND status = ?", repo.ID, db.StatusActive).Find(&subs).Error; err != nil {
-		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("error finding active subscriptions", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		return
 	}
 
 	for _, sub := range subs {
 		if err := s.notifier.SendRepoMoved(&sub, repo); err != nil {
-			log.Printf("failed to notify %s for %s/%s: %v", sub.Email, repo.Owner, repo.Name, err)
+			logger.Log.Error("failed to notify user", zap.String("email", sub.Email), zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}
 
 	if err := s.db.Model(&db.Subscription{}).
 		Where("repository_id = ?", repo.ID).
 		Update("status", db.StatusUnsubscribed).Error; err != nil {
-		log.Printf("failed to unsubscribe users for %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("failed to unsubscribe users", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 	}
 
 	if err := s.db.Delete(repo).Error; err != nil {
-		log.Printf("failed to soft-delete stale repo %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("failed to soft-delete stale repo", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 	}
 }
