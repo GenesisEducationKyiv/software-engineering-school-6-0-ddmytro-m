@@ -23,8 +23,8 @@ type RateLimitProvider interface {
 
 // Scanner periodically checks repositories for updates.
 type Scanner struct {
-	db *gorm.DB
-	gh *github.Client
+	store RepositoryStore
+	gh    *github.Client
 
 	notifier Notifier
 	limiter  *rate.Limiter
@@ -46,7 +46,7 @@ func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp Ra
 	limiter := rate.NewLimiter(rate.Limit(1), 1)
 
 	return &Scanner{
-		db:       orm,
+		store:    NewRepositoryStore(orm),
 		gh:       ghClient,
 		notifier: notifier,
 		limiter:  limiter,
@@ -97,12 +97,7 @@ func (s *Scanner) Start(ctx context.Context) {
 func (s *Scanner) recover() {
 	log.Println("Recovering stuck repositories...")
 
-	err := s.db.Model(&db.Repository{}).
-		Where("status = ?", "processing").
-		Updates(map[string]any{
-			"status": "idle",
-		}).Error
-
+	err := s.store.RecoverStuckRepos()
 	if err != nil {
 		log.Printf("Recovery error: %v", err)
 	}
@@ -159,41 +154,18 @@ func (s *Scanner) produce(ctx context.Context) {
 		return
 	}
 
-	var ids []uint
-
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Model(&db.Repository{}).
-			Select("id").
-			Where("status = ? AND (last_scanned_at IS NULL OR last_scanned_at <= ?)", "idle", time.Now().Add(-s.minCheckInterval)).
-			Order("last_scanned_at ASC").
-			Limit(batchSize).
-			Pluck("id", &ids).Error
-
-		if err != nil {
-			return err
-		}
-		if len(ids) == 0 {
-			log.Print("no repositories to scan")
-			return nil
-		}
-
-		log.Printf("found %d repositories to scan", len(ids))
-
-		return tx.Model(&db.Repository{}).
-			Where("id IN ?", ids).
-			Updates(map[string]any{
-				"status":          "processing",
-				"last_scanned_at": time.Now(), // update early to prevent re-queuing while processing
-			}).Error
-	})
+	repos, err := s.store.ClaimIdle(batchSize, s.minCheckInterval)
 
 	if err != nil {
 		log.Printf("producer db error: %v", err)
 		return
 	}
+	if len(repos) == 0 {
+		log.Print("no repositories to scan")
+		return
+	}
 
-	var repos []db.Repository
-	s.db.Find(&repos, ids)
+	log.Printf("found %d repositories to scan", len(repos))
 
 	for _, r := range repos {
 		select {
@@ -228,14 +200,9 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 
 func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 	defer func() {
-		s.db.Model(repo).Updates(map[string]any{
-			"status":                 "idle",
-			"last_scanned_at":        time.Now(), // accurate timestamp after processing completes
-			"e_tag":                  repo.ETag,
-			"last_release_github_id": repo.LastRelease.GitHubID,
-			"last_release_tag_name":  repo.LastRelease.TagName,
-			"last_release_e_tag":     repo.LastRelease.ETag,
-		})
+		if err := s.store.UpdateScanStatus(repo); err != nil {
+			log.Printf("error updating scan status for %s/%s: %v", repo.Owner, repo.Name, err)
+		}
 	}()
 
 	repoResp := s.gh.GetRepository(ctx, repo.Owner, repo.Name, repo.ETag)
@@ -298,8 +265,8 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 }
 
 func (s *Scanner) handleNewRelease(repo *db.Repository, latestRelease *github.LatestRelease) {
-	var subs []db.Subscription
-	if err := s.db.Where("repository_id = ? AND status = ?", repo.ID, db.StatusActive).Find(&subs).Error; err != nil {
+	subs, err := s.store.GetActiveSubscriptions(repo.ID)
+	if err != nil {
 		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
 		return
 	}
@@ -312,8 +279,8 @@ func (s *Scanner) handleNewRelease(repo *db.Repository, latestRelease *github.La
 }
 
 func (s *Scanner) handleRepoMoved(repo *db.Repository) {
-	var subs []db.Subscription
-	if err := s.db.Where("repository_id = ? AND status = ?", repo.ID, db.StatusActive).Find(&subs).Error; err != nil {
+	subs, err := s.store.GetActiveSubscriptions(repo.ID)
+	if err != nil {
 		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
 		return
 	}
@@ -324,13 +291,7 @@ func (s *Scanner) handleRepoMoved(repo *db.Repository) {
 		}
 	}
 
-	if err := s.db.Model(&db.Subscription{}).
-		Where("repository_id = ?", repo.ID).
-		Update("status", db.StatusUnsubscribed).Error; err != nil {
-		log.Printf("failed to unsubscribe users for %s/%s: %v", repo.Owner, repo.Name, err)
-	}
-
-	if err := s.db.Delete(repo).Error; err != nil {
-		log.Printf("failed to soft-delete stale repo %s/%s: %v", repo.Owner, repo.Name, err)
+	if err := s.store.MarkMovedAndUnsubscribe(repo); err != nil {
+		log.Printf("failed to handle db updates for moved repo %s/%s: %v", repo.Owner, repo.Name, err)
 	}
 }
