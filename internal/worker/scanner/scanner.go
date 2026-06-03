@@ -4,7 +4,6 @@ package scanner
 import (
 	"context"
 	"log"
-	"math"
 	"sync"
 	"time"
 
@@ -19,11 +18,10 @@ import (
 type Scanner struct {
 	store     RepositoryStore
 	processor RepoProcessor
+	producer  RepoProducer
 	quota     QuotaManager
 
-	repoQueue chan db.Repository
-	queueSize int
-
+	repoQueue   chan db.Repository
 	workerCount int
 
 	producerInterval time.Duration
@@ -35,14 +33,15 @@ func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp Ra
 	store := NewRepositoryStore(orm)
 	quota := NewQuotaManager(rlp, config.SafetyBuffer)
 	processor := NewRepoProcessor(store, ghClient, notifier, quota)
+	producer := NewRepoProducer(store, quota, config.ProducerInterval, config.MinInterval)
 
 	return &Scanner{
 		store:     store,
 		processor: processor,
+		producer:  producer,
 		quota:     quota,
 
 		repoQueue: make(chan db.Repository, config.QueueSize),
-		queueSize: config.QueueSize,
 
 		producerInterval: config.ProducerInterval,
 		workerCount:      config.Workers,
@@ -67,7 +66,7 @@ func (s *Scanner) Start(ctx context.Context) {
 	defer ticker.Stop()
 
 	log.Printf("scanner online: %d workers, min interval %v", s.workerCount, s.minCheckInterval)
-	s.produce(ctx)
+	s.producer.Produce(ctx, s.repoQueue)
 
 	for {
 		select {
@@ -76,7 +75,7 @@ func (s *Scanner) Start(ctx context.Context) {
 			wg.Wait()
 			return
 		case <-ticker.C:
-			s.produce(ctx)
+			s.producer.Produce(ctx, s.repoQueue)
 		}
 	}
 }
@@ -87,41 +86,6 @@ func (s *Scanner) recover() {
 	err := s.store.RecoverStuckRepos()
 	if err != nil {
 		log.Printf("Recovery error: %v", err)
-	}
-}
-
-func (s *Scanner) produce(ctx context.Context) {
-	rps := s.quota.Refresh()
-	if rps == 0 {
-		return
-	}
-
-	batchSize := int(math.Ceil(rps * s.producerInterval.Seconds()))
-	batchSize = min(batchSize, s.queueSize-len(s.repoQueue))
-
-	if batchSize <= 0 {
-		return
-	}
-
-	repos, err := s.store.ClaimIdle(batchSize, s.minCheckInterval)
-
-	if err != nil {
-		log.Printf("producer db error: %v", err)
-		return
-	}
-	if len(repos) == 0 {
-		log.Print("no repositories to scan")
-		return
-	}
-
-	log.Printf("found %d repositories to scan", len(repos))
-
-	for _, r := range repos {
-		select {
-		case s.repoQueue <- r:
-		case <-ctx.Done():
-			return
-		}
 	}
 }
 

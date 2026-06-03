@@ -589,7 +589,10 @@ func TestProduce_RateLimitLow_LimiterSetToZero(t *testing.T) {
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
-	s.produce(context.Background())
+	s.producer.Produce(context.Background(), s.repoQueue)
+	s.producer.Produce(context.Background(), s.repoQueue)
+	s.producer.Produce(context.Background(), s.repoQueue)
+	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if s.quota.Limit() != 0 {
 		t.Errorf("limiter should be 0 when usable requests <= 0, got %v", s.quota.Limit())
@@ -612,7 +615,7 @@ func TestProduce_RateLimitHealthy_LimiterPositive(t *testing.T) {
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
-	s.produce(context.Background())
+	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if s.quota.Limit() <= 0 {
 		t.Errorf("limiter should be positive with healthy rate limits, got %v", s.quota.Limit())
@@ -632,7 +635,7 @@ func TestProduce_RetryAfterInFuture_LimiterFrozen(t *testing.T) {
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
-	s.produce(context.Background())
+	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if s.quota.Limit() != 0 {
 		t.Errorf("limiter should be 0 during RetryAfter backoff, got %v", s.quota.Limit())
@@ -651,7 +654,7 @@ func TestProduce_RpsCapAt10(t *testing.T) {
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
-	s.produce(context.Background())
+	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if float64(s.quota.Limit()) > 5.0 {
 		t.Errorf("limiter should be capped at 5 repos per second (10 API rps), got %v", s.quota.Limit())
@@ -736,7 +739,7 @@ func TestProduce_MultipleRepos_CorrectBatching(t *testing.T) {
 	s := NewScanner(dbConn, ghClient, &captureNotifier{}, rlp, cfg)
 	s.quota.SetLimit(rate.Inf)
 
-	s.produce(context.Background())
+	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if len(s.repoQueue) != 3 {
 		t.Errorf("expected 3 repos in queue, got %d", len(s.repoQueue))
