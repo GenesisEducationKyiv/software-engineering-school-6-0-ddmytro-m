@@ -146,7 +146,7 @@ func newScanner(orm *gorm.DB, ghClient *github.Client, rlp RateLimitProvider, no
 	}
 
 	s := NewScanner(orm, ghClient, notifier, rlp, cfg)
-	s.limiter = rate.NewLimiter(rate.Inf, 1)
+	s.quota.SetLimit(rate.Inf)
 	return s
 }
 
@@ -459,8 +459,8 @@ func TestProcessRepo_RepoCheckRateLimited_FreezesLimiterSkipsRelease(t *testing.
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
 	s.processRepo(context.Background(), repo)
 
-	if s.limiter.Limit() != 0 {
-		t.Errorf("limiter should be frozen (0) after 429 on repo check, got %v", s.limiter.Limit())
+	if s.quota.Limit() != 0 {
+		t.Errorf("limiter should be frozen (0) after 429 on repo check, got %v", s.quota.Limit())
 	}
 	if len(notifier.releases) != 0 {
 		t.Errorf("expected 0 notifications, got %d", len(notifier.releases))
@@ -514,8 +514,8 @@ func TestProcessRepo_403_FreezesLimiter(t *testing.T) {
 	s := newScanner(dbConn, ghClient, nil, &captureNotifier{})
 	s.processRepo(context.Background(), repo)
 
-	if s.limiter.Limit() != 0 {
-		t.Errorf("limiter.Limit() = %v, want 0 after 403", s.limiter.Limit())
+	if s.quota.Limit() != 0 {
+		t.Errorf("limiter.Limit() = %v, want 0 after 403", s.quota.Limit())
 	}
 }
 
@@ -591,8 +591,8 @@ func TestProduce_RateLimitLow_LimiterSetToZero(t *testing.T) {
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
 	s.produce(context.Background())
 
-	if s.limiter.Limit() != 0 {
-		t.Errorf("limiter should be 0 when usable requests <= 0, got %v", s.limiter.Limit())
+	if s.quota.Limit() != 0 {
+		t.Errorf("limiter should be 0 when usable requests <= 0, got %v", s.quota.Limit())
 	}
 	if len(s.repoQueue) != 0 {
 		t.Errorf("queue should be empty when usable requests <= 0, got %d", len(s.repoQueue))
@@ -614,8 +614,8 @@ func TestProduce_RateLimitHealthy_LimiterPositive(t *testing.T) {
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
 	s.produce(context.Background())
 
-	if s.limiter.Limit() <= 0 {
-		t.Errorf("limiter should be positive with healthy rate limits, got %v", s.limiter.Limit())
+	if s.quota.Limit() <= 0 {
+		t.Errorf("limiter should be positive with healthy rate limits, got %v", s.quota.Limit())
 	}
 }
 
@@ -634,8 +634,8 @@ func TestProduce_RetryAfterInFuture_LimiterFrozen(t *testing.T) {
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
 	s.produce(context.Background())
 
-	if s.limiter.Limit() != 0 {
-		t.Errorf("limiter should be 0 during RetryAfter backoff, got %v", s.limiter.Limit())
+	if s.quota.Limit() != 0 {
+		t.Errorf("limiter should be 0 during RetryAfter backoff, got %v", s.quota.Limit())
 	}
 }
 
@@ -653,8 +653,8 @@ func TestProduce_RpsCapAt10(t *testing.T) {
 	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
 	s.produce(context.Background())
 
-	if float64(s.limiter.Limit()) > 5.0 {
-		t.Errorf("limiter should be capped at 5 repos per second (10 API rps), got %v", s.limiter.Limit())
+	if float64(s.quota.Limit()) > 5.0 {
+		t.Errorf("limiter should be capped at 5 repos per second (10 API rps), got %v", s.quota.Limit())
 	}
 }
 
@@ -733,7 +733,7 @@ func TestProduce_MultipleRepos_CorrectBatching(t *testing.T) {
 		ProducerInterval: 10 * time.Second,
 	}
 	s := NewScanner(dbConn, ghClient, &captureNotifier{}, rlp, cfg)
-	s.limiter = rate.NewLimiter(rate.Inf, 1)
+	s.quota.SetLimit(rate.Inf)
 
 	s.produce(context.Background())
 

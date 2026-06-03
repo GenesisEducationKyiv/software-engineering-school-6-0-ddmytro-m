@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
@@ -16,20 +15,13 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 )
 
-// RateLimitProvider gives a method to get current rate limits regardless of internal implementation
-type RateLimitProvider interface {
-	GetRateLimits() github.RateLimits
-}
-
 // Scanner periodically checks repositories for updates.
 type Scanner struct {
 	store RepositoryStore
 	gh    *github.Client
 
 	notifier Notifier
-	limiter  *rate.Limiter
-
-	rlp RateLimitProvider
+	quota    QuotaManager
 
 	repoQueue chan db.Repository
 	queueSize int
@@ -43,15 +35,12 @@ type Scanner struct {
 
 // NewScanner creates a new Scanner instance.
 func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp RateLimitProvider, config *config.ScannerConfig) *Scanner {
-	limiter := rate.NewLimiter(rate.Limit(1), 1)
-
 	return &Scanner{
 		store:    NewRepositoryStore(orm),
 		gh:       ghClient,
 		notifier: notifier,
-		limiter:  limiter,
 
-		rlp: rlp,
+		quota: NewQuotaManager(rlp, config.SafetyBuffer),
 
 		repoQueue: make(chan db.Repository, config.QueueSize),
 		queueSize: config.QueueSize,
@@ -104,45 +93,7 @@ func (s *Scanner) recover() {
 }
 
 func (s *Scanner) produce(ctx context.Context) {
-	var limits github.RateLimits
-	if s.rlp != nil {
-		limits = s.rlp.GetRateLimits()
-	}
-	now := time.Now()
-
-	log.Print("checking rate limits...")
-
-	if now.Before(limits.RetryAfter) {
-		log.Print("secondary rate limits hit, hibernating...")
-		s.limiter.SetLimit(0)
-		return
-	}
-
-	if !limits.IsValid() {
-		limits = github.GetUnauthenticatedRateLimits() // scanner implies the lack of token by default
-	}
-
-	timeUntilReset := time.Until(limits.ResetAt).Seconds()
-	if timeUntilReset <= 0 {
-		timeUntilReset = 3600
-	}
-
-	reserved := float64(limits.Limit) * s.safetyBuffer
-	usable := float64(limits.Remaining) - reserved
-
-	var rps float64
-	if usable <= 0 {
-		rps = 0
-		log.Printf("primary rate limit low (%d/%d). hibernating...", limits.Remaining, limits.Limit)
-	} else {
-		rps = usable / timeUntilReset
-		// don't exceed 10 RPS to avoid GitHub Secondary Limits
-		rps = math.Min(rps, 10.0)
-		// each repo requires up to 2 API requests (repo status + latest release)
-		rps /= 2.0
-	}
-
-	s.limiter.SetLimit(rate.Limit(rps))
+	rps := s.quota.Refresh()
 	if rps == 0 {
 		return
 	}
@@ -188,7 +139,7 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 				return
 			}
 
-			if err := s.limiter.Wait(ctx); err != nil {
+			if err := s.quota.Wait(ctx); err != nil {
 				log.Printf("worker %d: limiter wait error: %v", id, err)
 				return
 			}
@@ -224,7 +175,7 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 		return
 
 	case 403, 429:
-		s.limiter.SetLimit(0)
+		s.quota.Freeze()
 		log.Printf("critical limit hit on repo check (%d). limiter frozen.", repoResp.StatusCode)
 		return
 
@@ -254,7 +205,7 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 		// repo have no latest release
 
 	case 403, 429:
-		s.limiter.SetLimit(0)
+		s.quota.Freeze()
 		log.Printf("critical limit hit (%d). limiter frozen.", releaseResp.StatusCode)
 
 	default:
