@@ -19,10 +19,10 @@ type Scanner struct {
 	store     RepositoryStore
 	processor RepoProcessor
 	producer  RepoProducer
-	quota     QuotaManager
+	workers   WorkerPool
 
-	repoQueue   chan db.Repository
-	workerCount int
+	quota     QuotaManager
+	repoQueue chan db.Repository
 
 	producerInterval time.Duration
 	minCheckInterval time.Duration
@@ -34,17 +34,18 @@ func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp Ra
 	quota := NewQuotaManager(rlp, config.SafetyBuffer)
 	processor := NewRepoProcessor(store, ghClient, notifier, quota)
 	producer := NewRepoProducer(store, quota, config.ProducerInterval, config.MinInterval)
+	workers := NewWorkerPool(processor, quota, config.Workers)
 
 	return &Scanner{
 		store:     store,
 		processor: processor,
 		producer:  producer,
+		workers:   workers,
 		quota:     quota,
 
 		repoQueue: make(chan db.Repository, config.QueueSize),
 
 		producerInterval: config.ProducerInterval,
-		workerCount:      config.Workers,
 		minCheckInterval: config.MinInterval,
 	}
 }
@@ -55,17 +56,12 @@ func (s *Scanner) Start(ctx context.Context) {
 
 	var wg sync.WaitGroup
 
-	for i := range s.workerCount {
-		wg.Go(func() {
-			defer wg.Done()
-			s.worker(ctx, i)
-		})
-	}
+	s.workers.Start(ctx, &wg, s.repoQueue)
 
 	ticker := time.NewTicker(s.producerInterval)
 	defer ticker.Stop()
 
-	log.Printf("scanner online: %d workers, min interval %v", s.workerCount, s.minCheckInterval)
+	log.Printf("scanner orchestrator online: min interval %v", s.minCheckInterval)
 	s.producer.Produce(ctx, s.repoQueue)
 
 	for {
@@ -86,27 +82,5 @@ func (s *Scanner) recover() {
 	err := s.store.RecoverStuckRepos()
 	if err != nil {
 		log.Printf("Recovery error: %v", err)
-	}
-}
-
-func (s *Scanner) worker(ctx context.Context, id int) {
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("worker %d shutting down", id)
-			return
-		case r, ok := <-s.repoQueue:
-			if !ok {
-				log.Printf("worker %d shutting down", id)
-				return
-			}
-
-			if err := s.quota.Wait(ctx); err != nil {
-				log.Printf("worker %d: limiter wait error: %v", id, err)
-				return
-			}
-			log.Printf("worker %d: processing %s/%s", id, r.Owner, r.Name)
-			s.processor.ProcessRepo(ctx, &r)
-		}
 	}
 }
