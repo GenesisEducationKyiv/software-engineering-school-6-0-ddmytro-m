@@ -20,28 +20,50 @@ const (
 	maxRetries            = 5
 )
 
+// Message represents a single message retrieved from the message queue.
+type Message interface {
+	// ID returns the unique identifier of the message.
+	ID() string
+	// Payload returns the raw byte content of the message.
+	Payload() []byte
+}
+
+// Stream defines the interface for interacting with a message stream.
+type Stream[M Message] interface {
+	// Ack acknowledges that one or more messages have been processed.
+	Ack(ctx context.Context, group string, ids ...string) error
+	// AutoClaim transfers ownership of pending messages that have been idle for a specific duration.
+	AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []M, next string, err error)
+	// EnsureConsumerGroup creates the consumer group if it does not already exist.
+	EnsureConsumerGroup(ctx context.Context, group string) error
+	// PublishDeadLetter moves a failed message to a dead-letter queue for manual inspection.
+	PublishDeadLetter(ctx context.Context, msg any) error
+	// ReadGroup reads new messages from the stream for a specific consumer group.
+	ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]M, error)
+}
+
 // Mailer consumes messages from a Redis stream and sends emails.
-type Mailer struct {
-	stream      mq.Stream
+type Mailer[M Message] struct {
+	stream      Stream[M]
 	group       string
 	workerCount int
-	msgQueue    chan mq.Message
+	msgQueue    chan M
 	smtpClient  *smtp.Client
 }
 
 // NewMailer creates a new Mailer instance.
-func NewMailer(stream mq.Stream, group string, workerCount int, smtpClient *smtp.Client) *Mailer {
-	return &Mailer{
+func NewMailer[M Message](stream Stream[M], group string, workerCount int, smtpClient *smtp.Client) *Mailer[M] {
+	return &Mailer[M]{
 		stream:      stream,
 		group:       group,
 		workerCount: workerCount,
-		msgQueue:    make(chan mq.Message, workerCount*2),
+		msgQueue:    make(chan M, workerCount*2),
 		smtpClient:  smtpClient,
 	}
 }
 
 // Start begins the mailer, starting workers and consuming messages from the stream.
-func (m *Mailer) Start(ctx context.Context) {
+func (m *Mailer[M]) Start(ctx context.Context) {
 	if err := m.stream.EnsureConsumerGroup(ctx, m.group); err != nil {
 		log.Printf("mailer failed to ensure consumer group: %v", err)
 	}
@@ -77,7 +99,7 @@ func (m *Mailer) Start(ctx context.Context) {
 // reclaimStalePending uses XAUTOCLAIM to pull back messages that have been
 // sitting in the PEL (i.e. delivered but never acked) for longer than
 // stalePendingThreshold. this covers crashes and hard-killed workers.
-func (m *Mailer) reclaimStalePending(ctx context.Context, consumerName string) {
+func (m *Mailer[M]) reclaimStalePending(ctx context.Context, consumerName string) {
 	start := "0-0"
 	claimed := 0
 
@@ -106,7 +128,7 @@ func (m *Mailer) reclaimStalePending(ctx context.Context, consumerName string) {
 	}
 }
 
-func (m *Mailer) consume(ctx context.Context, consumerName string) {
+func (m *Mailer[M]) consume(ctx context.Context, consumerName string) {
 	messages, err := m.stream.ReadGroup(ctx, m.group, consumerName, 10, 2*time.Second)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -129,7 +151,7 @@ func (m *Mailer) consume(ctx context.Context, consumerName string) {
 	}
 }
 
-func (m *Mailer) worker(ctx context.Context, id int) {
+func (m *Mailer[M]) worker(ctx context.Context, id int) {
 	log.Printf("mailer worker %d started", id)
 	for {
 		select {
@@ -146,7 +168,7 @@ func (m *Mailer) worker(ctx context.Context, id int) {
 	}
 }
 
-func (m *Mailer) processMessage(ctx context.Context, workerID int, message mq.Message) {
+func (m *Mailer[M]) processMessage(ctx context.Context, workerID int, message M) {
 	payload := message.Payload()
 	if len(payload) == 0 {
 		log.Printf("mailer worker %d: invalid payload format for message %s", workerID, message.ID())
@@ -192,7 +214,7 @@ func (m *Mailer) processMessage(ctx context.Context, workerID int, message mq.Me
 
 // buildEmail returns the subject/body for a known event, and false if the
 // event type is unrecognised.
-func (m *Mailer) buildEmail(msg mq.DeliveryMessage) (subject, body string, known bool) {
+func (m *Mailer[M]) buildEmail(msg mq.DeliveryMessage) (subject, body string, known bool) {
 	switch msg.Event {
 	case mq.EventNewRelease:
 		return fmt.Sprintf("New release for %s: %s", msg.Repo, msg.Release),
@@ -213,7 +235,7 @@ func (m *Mailer) buildEmail(msg mq.DeliveryMessage) (subject, body string, known
 
 // sendWithRetry attempts to send an email with exponential backoff.
 // Returns the last error if all attempts fail.
-func (m *Mailer) sendWithRetry(ctx context.Context, workerID int, email, subject, body string) error {
+func (m *Mailer[M]) sendWithRetry(ctx context.Context, workerID int, email, subject, body string) error {
 	backoff := time.Second
 	var err error
 
@@ -242,7 +264,7 @@ func (m *Mailer) sendWithRetry(ctx context.Context, workerID int, email, subject
 
 // deadLetter acks the message out of the main stream and writes it to a
 // separate dead-letter stream for later inspection / manual replay.
-func (m *Mailer) deadLetter(ctx context.Context, workerID int, message mq.Message, reason string) {
+func (m *Mailer[M]) deadLetter(ctx context.Context, workerID int, message M, reason string) {
 	dlPayload := map[string]any{
 		"original_id": message.ID(),
 		"reason":      reason,

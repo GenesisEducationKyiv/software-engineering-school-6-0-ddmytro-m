@@ -8,27 +8,25 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 )
 
-// MessageAdapter adapts a Redis XMessage to the mq.Message interface.
-type MessageAdapter struct {
+// Message represents a Redis stream message.
+type Message struct {
 	xmsg goredis.XMessage
 }
 
-// NewMessageAdapter creates a new MessageAdapter from a Redis XMessage.
-func NewMessageAdapter(xmsg goredis.XMessage) MessageAdapter {
-	return MessageAdapter{xmsg: xmsg}
+// NewMessage creates a new Message from a Redis XMessage.
+func NewMessage(xmsg goredis.XMessage) Message {
+	return Message{xmsg: xmsg}
 }
 
 // ID returns the unique identifier of the Redis stream message.
-func (m MessageAdapter) ID() string {
+func (m Message) ID() string {
 	return m.xmsg.ID
 }
 
 // Payload returns the byte content stored in the "payload" field of the Redis message.
-func (m MessageAdapter) Payload() []byte {
+func (m Message) Payload() []byte {
 	if val, ok := m.xmsg.Values["payload"].(string); ok {
 		return []byte(val)
 	}
@@ -92,7 +90,7 @@ func (s *Stream) PublishDeadLetter(ctx context.Context, msg any) error {
 }
 
 // ReadGroup reads messages from a stream using a consumer group.
-func (s *Stream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]mq.Message, error) {
+func (s *Stream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]Message, error) {
 	res, err := s.client.XReadGroup(ctx, &goredis.XReadGroupArgs{
 		Group:    group,
 		Consumer: consumer,
@@ -111,9 +109,9 @@ func (s *Stream) ReadGroup(ctx context.Context, group, consumer string, count in
 		return nil, nil
 	}
 
-	msgs := make([]mq.Message, len(res[0].Messages))
+	msgs := make([]Message, len(res[0].Messages))
 	for i, xmsg := range res[0].Messages {
-		msgs[i] = &MessageAdapter{xmsg: xmsg}
+		msgs[i] = Message{xmsg: xmsg}
 	}
 
 	return msgs, nil
@@ -125,7 +123,7 @@ func (s *Stream) Ack(ctx context.Context, group string, ids ...string) error {
 }
 
 // AutoClaim automatically claims pending messages from other consumers.
-func (s *Stream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []mq.Message, next string, err error) {
+func (s *Stream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []Message, next string, err error) {
 	xmsgs, next, err := s.client.XAutoClaim(ctx, &goredis.XAutoClaimArgs{
 		Stream:   s.stream,
 		Group:    group,
@@ -142,9 +140,9 @@ func (s *Stream) AutoClaim(ctx context.Context, group, consumer string, minIdle 
 		return nil, "", nil
 	}
 
-	msgs = make([]mq.Message, len(xmsgs))
+	msgs = make([]Message, len(xmsgs))
 	for i, xmsg := range xmsgs {
-		msgs[i] = &MessageAdapter{xmsg: xmsg}
+		msgs[i] = Message{xmsg: xmsg}
 	}
 
 	return msgs, next, err

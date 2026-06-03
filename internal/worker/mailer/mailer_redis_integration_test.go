@@ -98,7 +98,7 @@ func TestProcessMessage_ValidEvents(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			jsonPayload := fmt.Sprintf(`{"event": "%s", "email": "test@example.com", "repo": "owner/repo", "release": "v1.0.0", "payload": {"token": "12345"}}`, tc.event)
 
-			msg := redis.NewMessageAdapter(goredis.XMessage{
+			msg := redis.NewMessage(goredis.XMessage{
 				ID:     "1-0",
 				Values: map[string]any{"payload": jsonPayload},
 			})
@@ -115,7 +115,7 @@ func TestProcessMessage_InvalidPayloadType(t *testing.T) {
 	stream := redis.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
-	msg := redis.NewMessageAdapter(
+	msg := redis.NewMessage(
 		goredis.XMessage{
 			ID: "1-0",
 			Values: map[string]any{
@@ -134,7 +134,7 @@ func TestProcessMessage_InvalidJSON(t *testing.T) {
 	stream := redis.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
-	msg := redis.NewMessageAdapter(
+	msg := redis.NewMessage(
 		goredis.XMessage{
 			ID: "2-0",
 			Values: map[string]any{
