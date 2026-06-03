@@ -28,7 +28,6 @@ type Scanner struct {
 
 	producerInterval time.Duration
 	minCheckInterval time.Duration
-	safetyBuffer     float64 // e.g. 20%
 }
 
 // NewScanner creates a new Scanner instance.
@@ -48,7 +47,6 @@ func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp Ra
 		producerInterval: config.ProducerInterval,
 		workerCount:      config.Workers,
 		minCheckInterval: config.MinInterval,
-		safetyBuffer:     config.SafetyBuffer,
 	}
 }
 
