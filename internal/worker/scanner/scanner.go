@@ -17,11 +17,9 @@ import (
 
 // Scanner periodically checks repositories for updates.
 type Scanner struct {
-	store RepositoryStore
-	gh    *github.Client
-
-	notifier Notifier
-	quota    QuotaManager
+	store     RepositoryStore
+	processor RepoProcessor
+	quota     QuotaManager
 
 	repoQueue chan db.Repository
 	queueSize int
@@ -35,12 +33,14 @@ type Scanner struct {
 
 // NewScanner creates a new Scanner instance.
 func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp RateLimitProvider, config *config.ScannerConfig) *Scanner {
-	return &Scanner{
-		store:    NewRepositoryStore(orm),
-		gh:       ghClient,
-		notifier: notifier,
+	store := NewRepositoryStore(orm)
+	quota := NewQuotaManager(rlp, config.SafetyBuffer)
+	processor := NewRepoProcessor(store, ghClient, notifier, quota)
 
-		quota: NewQuotaManager(rlp, config.SafetyBuffer),
+	return &Scanner{
+		store:     store,
+		processor: processor,
+		quota:     quota,
 
 		repoQueue: make(chan db.Repository, config.QueueSize),
 		queueSize: config.QueueSize,
@@ -144,105 +144,7 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 				return
 			}
 			log.Printf("worker %d: processing %s/%s", id, r.Owner, r.Name)
-			s.processRepo(ctx, &r)
+			s.processor.ProcessRepo(ctx, &r)
 		}
-	}
-}
-
-func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
-	defer func() {
-		if err := s.store.UpdateScanStatus(repo); err != nil {
-			log.Printf("error updating scan status for %s/%s: %v", repo.Owner, repo.Name, err)
-		}
-	}()
-
-	repoResp := s.gh.GetRepository(ctx, repo.Owner, repo.Name, repo.ETag)
-
-	switch repoResp.StatusCode {
-	case 200:
-		if repoResp.Data.ID != repo.GitHubID {
-			log.Printf("repo ID mismatch for %s/%s: stored %d, got %d — skipping", repo.Owner, repo.Name, repo.GitHubID, repoResp.Data.ID)
-			s.handleRepoMoved(repo)
-			return
-		}
-		repo.ETag = repoResp.ETag
-
-	case 304:
-		// identity confirmed via ETag, proceed
-
-	case 404:
-		log.Printf("repo %s/%s no longer exists — skipping", repo.Owner, repo.Name)
-		return
-
-	case 403, 429:
-		s.quota.Freeze()
-		log.Printf("critical limit hit on repo check (%d). limiter frozen.", repoResp.StatusCode)
-		return
-
-	default:
-		if repoResp.Error != nil {
-			log.Printf("error checking repo %s/%s: %v", repo.Owner, repo.Name, repoResp.Error)
-		}
-		return
-	}
-
-	releaseResp := s.gh.GetLatestRelease(ctx, repo.Owner, repo.Name, repo.LastRelease.ETag)
-
-	switch releaseResp.StatusCode {
-	case 200:
-		if releaseResp.Data.TagName != repo.LastRelease.TagName {
-			log.Printf("new release for %s/%s: %s", repo.Owner, repo.Name, releaseResp.Data.TagName)
-			s.handleNewRelease(repo, &releaseResp.Data)
-			repo.LastRelease.TagName = releaseResp.Data.TagName
-			repo.LastRelease.GitHubID = releaseResp.Data.ID
-		}
-		repo.LastRelease.ETag = releaseResp.ETag
-
-	case 304:
-		// no change
-
-	case 404:
-		// repo have no latest release
-
-	case 403, 429:
-		s.quota.Freeze()
-		log.Printf("critical limit hit (%d). limiter frozen.", releaseResp.StatusCode)
-
-	default:
-		if releaseResp.Error != nil {
-			log.Printf("error while getting latest release: %s", releaseResp.Error.Error())
-		}
-	}
-}
-
-func (s *Scanner) handleNewRelease(repo *db.Repository, latestRelease *github.LatestRelease) {
-	subs, err := s.store.GetActiveSubscriptions(repo.ID)
-	if err != nil {
-		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
-		return
-	}
-
-	for _, sub := range subs {
-		if err := s.notifier.SendNewRelease(&sub, repo, latestRelease); err != nil {
-			log.Printf("failed to notify %s for %s/%s: %v", sub.Email, repo.Owner, repo.Name, err)
-		}
-	}
-}
-
-func (s *Scanner) handleRepoMoved(repo *db.Repository) {
-	subs, err := s.store.GetActiveSubscriptions(repo.ID)
-	if err != nil {
-		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
-		return
-	}
-
-	for _, sub := range subs {
-		if err := s.notifier.SendRepoMoved(&sub, repo); err != nil {
-			log.Printf("failed to notify %s for %s/%s: %v", sub.Email, repo.Owner, repo.Name, err)
-		}
-	}
-
-	if err := s.store.MarkMovedAndUnsubscribe(repo); err != nil {
-		log.Printf("failed to handle db updates for moved repo %s/%s: %v", repo.Owner, repo.Name, err)
 	}
 }

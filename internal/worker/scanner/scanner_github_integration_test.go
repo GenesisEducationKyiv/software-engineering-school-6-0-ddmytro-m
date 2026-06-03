@@ -275,7 +275,7 @@ func TestProcessRepo_NewRelease_NotifiesSubscribersAndPersists(t *testing.T) {
 		ResetAt:   time.Now().Add(time.Hour),
 	}
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, rl), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	// two notifications — one per active subscriber
 	if len(notifier.releases) != 2 {
@@ -331,7 +331,7 @@ func TestProcessRepo_RepoMoved_NotifiesAndUnsubscribes(t *testing.T) {
 	})
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	// should trigger SendRepoMoved for active subscribers
 	if len(notifier.moved) != 2 {
@@ -371,7 +371,7 @@ func TestProcessRepo_304_NoNotificationNoTagChange(t *testing.T) {
 	})
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	if len(notifier.releases) != 0 {
 		t.Errorf("expected 0 notifications on 304, got %d", len(notifier.releases))
@@ -398,7 +398,7 @@ func TestProcessRepo_SameTag_NoNotification(t *testing.T) {
 	))
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	if len(notifier.releases) != 0 {
 		t.Errorf("expected 0 notifications when tag unchanged, got %d", len(notifier.releases))
@@ -424,7 +424,7 @@ func TestProcessRepo_RepoNotFound_SkipsRelease(t *testing.T) {
 	})
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	if len(notifier.releases) != 0 {
 		t.Errorf("expected 0 notifications when repo is 404, got %d", len(notifier.releases))
@@ -457,7 +457,7 @@ func TestProcessRepo_RepoCheckRateLimited_FreezesLimiterSkipsRelease(t *testing.
 	})
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	if s.quota.Limit() != 0 {
 		t.Errorf("limiter should be frozen (0) after 429 on repo check, got %v", s.quota.Limit())
@@ -493,7 +493,7 @@ func TestProcessRepo_RepoETagCachedOn304(t *testing.T) {
 	})
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), &captureNotifier{})
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	// repo 304 → proceed to release check; confirm the ETag was sent
 	if releaseCallCount != 1 {
@@ -512,7 +512,7 @@ func TestProcessRepo_403_FreezesLimiter(t *testing.T) {
 	})
 
 	s := newScanner(dbConn, ghClient, nil, &captureNotifier{})
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	if s.quota.Limit() != 0 {
 		t.Errorf("limiter.Limit() = %v, want 0 after 403", s.quota.Limit())
@@ -542,7 +542,7 @@ func TestProcessRepo_OnlyActiveSubscriptionsNotified(t *testing.T) {
 	))
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	if len(notifier.releases) != 1 {
 		t.Fatalf("expected 1 notification (active only), got %d", len(notifier.releases))
@@ -567,7 +567,7 @@ func TestProcessRepo_StatusRestoredToIdleAfterProcessing(t *testing.T) {
 	))
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), &captureNotifier{})
-	s.processRepo(context.Background(), repo)
+	s.processor.ProcessRepo(context.Background(), repo)
 
 	var updated db.Repository
 	dbConn.First(&updated, repo.ID)
@@ -667,7 +667,8 @@ func TestHandleNewRelease_NotifiesAllActiveSubscribers(t *testing.T) {
 	seedSubscription(t, dbConn, repo.ID, "two@example.com")
 
 	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
+	p := s.processor.(*domainRepoProcessor)
+	p.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
 
 	if len(notifier.releases) != 2 {
 		t.Fatalf("expected 2 notifications, got %d", len(notifier.releases))
@@ -786,8 +787,8 @@ func TestScanner_Integration_MultipleSubscribersDifferentRepos(t *testing.T) {
 	})
 
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
-	s.processRepo(context.Background(), repo1)
-	s.processRepo(context.Background(), repo2)
+	s.processor.ProcessRepo(context.Background(), repo1)
+	s.processor.ProcessRepo(context.Background(), repo2)
 
 	if len(notifier.releases) != 4 {
 		t.Fatalf("expected 4 notifications total, got %d", len(notifier.releases))
