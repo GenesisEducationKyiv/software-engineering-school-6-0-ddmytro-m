@@ -103,8 +103,6 @@ func (s *Scanner) produce(ctx context.Context) {
 	limits := s.gh.GetRateLimits(ctx)
 	now := time.Now()
 
-	logger.Log.Info("checking rate limits...")
-
 	if now.Before(limits.RetryAfter) {
 		logger.Log.Warn("secondary rate limits hit, hibernating...")
 		s.limiter.SetLimit(0)
