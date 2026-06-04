@@ -13,8 +13,8 @@ type Cache struct {
 }
 
 // NewCache creates a new instance of the Cache with a default Redis client.
-func NewCache() *Cache {
-	return &Cache{client: GetClient()}
+func NewCacheWithAddr(addr string) *Cache {
+	return &Cache{client: GetClient(addr)}
 }
 
 // NewCacheWithClient creates a new instance of the Cache with a provided Redis client.

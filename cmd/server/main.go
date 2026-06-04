@@ -32,7 +32,7 @@ func main() {
 	orm := db.Get()
 	defer db.Close()
 
-	redisClient := redis.GetClient()
+	redisClient := redis.GetClient(cfg.Redis.Addr)
 	defer func() {
 		err := redisClient.Close()
 		if err != nil {
