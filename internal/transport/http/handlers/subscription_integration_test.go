@@ -230,6 +230,45 @@ func TestConfirm_TokenNotFound(t *testing.T) {
 	}
 }
 
+func TestConfirm_Idempotency(t *testing.T) {
+	db := getCleanDB(t)
+	router, ghServer := setupTestEnv(t, db)
+	defer ghServer.Close()
+
+	// Seed DB with a pending subscription
+	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
+	db.Create(&repo)
+	confirmToken := "11111222223333344444555556666677"
+	sub := infraDB.Subscription{
+		Email:        "user@example.com",
+		RepositoryID: repo.ID,
+		Status:       infraDB.StatusPending,
+		ConfirmToken: confirmToken,
+	}
+	db.Create(&sub)
+
+	// First call to confirm
+	w1 := performRequest(router, http.MethodGet, "/confirm/"+sub.ConfirmToken, nil, nil)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first confirm: expected 200 OK, got %d", w1.Code)
+	}
+	apiToken1 := w1.Header().Get("X-Api-Token")
+	if apiToken1 == "" {
+		t.Fatal("first confirm: expected an API token, got none")
+	}
+
+	// Second call to confirm should be idempotent
+	w2 := performRequest(router, http.MethodGet, "/confirm/"+sub.ConfirmToken, nil, nil)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second confirm: expected 200 OK, got %d", w2.Code)
+	}
+	apiToken2 := w2.Header().Get("X-Api-Token")
+
+	if apiToken1 != apiToken2 {
+		t.Errorf("expected same API token on second call, got %s, want %s", apiToken2, apiToken1)
+	}
+}
+
 func TestUnsubscribe_MissingAuth(t *testing.T) {
 	db := getCleanDB(t)
 	router, ghServer := setupTestEnv(t, db)
@@ -265,6 +304,46 @@ func TestUnsubscribe_WrongApiToken(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404 Not Found due to mismatched token, got %d", w.Code)
+	}
+}
+
+func TestUnsubscribe_Idempotency(t *testing.T) {
+	db := getCleanDB(t)
+	router, ghServer := setupTestEnv(t, db)
+	defer ghServer.Close()
+
+	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
+	db.Create(&repo)
+
+	confirmToken := "aaaaabbbbbcccccdddddeeeeefffff11"
+	apiToken := "11111222223333344444555556666677"
+
+	db.Create(&infraDB.Subscription{
+		Email:        "user@example.com",
+		RepositoryID: repo.ID,
+		Status:       infraDB.StatusActive,
+		ConfirmToken: confirmToken,
+		APIToken:     apiToken,
+	})
+
+	authHeader := map[string]string{"Authorization": "Bearer " + apiToken}
+
+	// First call to unsubscribe
+	w1 := performRequest(router, http.MethodGet, "/unsubscribe/"+confirmToken, nil, authHeader)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("first unsubscribe: expected 200 OK, got %d", w1.Code)
+	}
+
+	// Second call to unsubscribe should be idempotent
+	w2 := performRequest(router, http.MethodGet, "/unsubscribe/"+confirmToken, nil, authHeader)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second unsubscribe: expected 200 OK, got %d", w2.Code)
+	}
+
+	var finalSub infraDB.Subscription
+	db.First(&finalSub, "confirm_token = ?", confirmToken)
+	if finalSub.Status != infraDB.StatusUnsubscribed {
+		t.Errorf("expected status to remain unsubscribed, got %s", finalSub.Status)
 	}
 }
 
