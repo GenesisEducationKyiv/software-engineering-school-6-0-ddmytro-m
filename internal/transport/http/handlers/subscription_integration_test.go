@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -83,7 +84,23 @@ func getCleanDB(t *testing.T) *gorm.DB {
 	return testDB
 }
 
-func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server) {
+type mockEmailSender struct {
+	sentTokens map[string]string
+	err        error
+}
+
+func (m *mockEmailSender) SendEmailVerification(email, token string) error {
+	if m.err != nil {
+		return m.err
+	}
+	if m.sentTokens == nil {
+		m.sentTokens = make(map[string]string)
+	}
+	m.sentTokens[email] = token
+	return nil
+}
+
+func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server, *mockEmailSender) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -103,10 +120,11 @@ func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server) {
 	)
 
 	r := gin.Default()
-	handler := NewSubscriptionHandler(db, ghClient, nil)
+	emailSender := &mockEmailSender{sentTokens: make(map[string]string)}
+	handler := NewSubscriptionHandler(db, ghClient, emailSender)
 	handler.RegisterRoutes(r.Group("/"))
 
-	return r, ghServer
+	return r, ghServer, emailSender
 }
 
 func performRequest(r http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
@@ -121,7 +139,7 @@ func performRequest(r http.Handler, method, path string, body []byte, headers ma
 
 func TestSubscriptionFlow(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, emailSender := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	testEmail := "user@example.com"
@@ -136,6 +154,10 @@ func TestSubscriptionFlow(t *testing.T) {
 
 	var sub infraDB.Subscription
 	db.First(&sub, "email = ?", testEmail)
+
+	if token, ok := emailSender.sentTokens[testEmail]; !ok || token != sub.ConfirmToken {
+		t.Fatalf("expected email verification to be sent with token %s, got %s", sub.ConfirmToken, token)
+	}
 
 	// Confirm
 	w = performRequest(router, http.MethodGet, "/confirm/"+sub.ConfirmToken, nil, nil)
@@ -159,7 +181,7 @@ func TestSubscriptionFlow(t *testing.T) {
 
 func TestSubscribe_InvalidInputs(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	tests := []struct {
@@ -186,7 +208,7 @@ func TestSubscribe_InvalidInputs(t *testing.T) {
 
 func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	// Seed DB with an active subscription
@@ -206,9 +228,24 @@ func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	}
 }
 
+func TestSubscribe_EmailSenderError(t *testing.T) {
+	db := getCleanDB(t)
+	router, ghServer, emailSender := setupTestEnv(t, db)
+	defer ghServer.Close()
+
+	emailSender.err = errors.New("queue error")
+
+	body, _ := json.Marshal(SubscribeRequest{Email: "user@example.com", Repo: "testowner/testrepo"})
+	w := performRequest(router, http.MethodPost, "/subscribe", body, map[string]string{"Content-Type": "application/json"})
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 Internal Server Error, got %d", w.Code)
+	}
+}
+
 func TestConfirm_InvalidOrMissingToken(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	w := performRequest(router, http.MethodGet, "/confirm/short-token", nil, nil)
@@ -219,7 +256,7 @@ func TestConfirm_InvalidOrMissingToken(t *testing.T) {
 
 func TestConfirm_TokenNotFound(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	validLengthFakeToken := "12345678901234567890123456789012"
@@ -232,7 +269,7 @@ func TestConfirm_TokenNotFound(t *testing.T) {
 
 func TestConfirm_Idempotency(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	// Seed DB with a pending subscription
@@ -271,7 +308,7 @@ func TestConfirm_Idempotency(t *testing.T) {
 
 func TestUnsubscribe_MissingAuth(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	validLengthFakeToken := "12345678901234567890123456789012"
@@ -284,7 +321,7 @@ func TestUnsubscribe_MissingAuth(t *testing.T) {
 
 func TestUnsubscribe_WrongApiToken(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	confirmToken := "aaaaabbbbbcccccdddddeeeeefffff11"
@@ -309,7 +346,7 @@ func TestUnsubscribe_WrongApiToken(t *testing.T) {
 
 func TestUnsubscribe_Idempotency(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
@@ -349,7 +386,7 @@ func TestUnsubscribe_Idempotency(t *testing.T) {
 
 func TestGetSubscriptions_MissingEmailParam(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	validApiToken := "11111222223333344444555556666677"
@@ -364,7 +401,7 @@ func TestGetSubscriptions_MissingEmailParam(t *testing.T) {
 
 func TestGetSubscriptions_Unauthorized(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer := setupTestEnv(t, db)
+	router, ghServer, _ := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	db.Create(&infraDB.Subscription{
