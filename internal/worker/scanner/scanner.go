@@ -208,7 +208,6 @@ func (s *Scanner) worker(ctx context.Context, id int) {
 				logger.Log.Error("worker limiter wait error", zap.Int("worker_id", id), zap.Error(err))
 				return
 			}
-			logger.Log.Info("worker processing repo", zap.Int("worker_id", id), zap.String("owner", r.Owner), zap.String("name", r.Name))
 			s.processRepo(ctx, &r)
 		}
 	}
