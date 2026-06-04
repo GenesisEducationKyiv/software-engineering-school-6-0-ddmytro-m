@@ -23,7 +23,7 @@ func InitLogger(esURL, indexName string) {
 
 	elasticSyncer, err := NewElasticSyncer(esURL, indexName)
 	if err != nil {
-		fmt.Printf("ElasticSyncer is offline: %v. Logging only in console.\n", err)
+		fmt.Printf("Failed to initialize ElasticSyncer: %v. Logging only to console.\n", err)
 	}
 
 	var cores []zapcore.Core
