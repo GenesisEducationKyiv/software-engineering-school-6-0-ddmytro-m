@@ -96,3 +96,28 @@ func TestAuthTransport_FallbackToDefaultTransport(t *testing.T) {
 		t.Errorf("Authorization = %q, want %q", gotAuth, want)
 	}
 }
+
+func TestAuthTransport_DoesNotModifyOriginalRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	authTransport := &AuthTransport{
+		Transport: http.DefaultTransport,
+		Token:     "test-token",
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+
+	resp, err := authTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	// The original request should not have the Authorization header
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("Original request was modified: got Authorization = %q", got)
+	}
+}
