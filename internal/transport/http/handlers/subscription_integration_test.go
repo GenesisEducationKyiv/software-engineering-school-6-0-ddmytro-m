@@ -137,7 +137,7 @@ func performRequest(r http.Handler, method, path string, body []byte, headers ma
 	return w
 }
 
-func TestSubscriptionFlow(t *testing.T) {
+func TestSubscribe_Success(t *testing.T) {
 	db := getCleanDB(t)
 	router, ghServer, emailSender := setupTestEnv(t, db)
 	defer ghServer.Close()
@@ -145,7 +145,6 @@ func TestSubscriptionFlow(t *testing.T) {
 	testEmail := "user@example.com"
 	testRepo := "testowner/testrepo"
 
-	// Subscribe
 	subReq, _ := json.Marshal(SubscribeRequest{Email: testEmail, Repo: testRepo})
 	w := performRequest(router, http.MethodPost, "/subscribe", subReq, map[string]string{"Content-Type": "application/json"})
 	if w.Code != http.StatusOK {
@@ -158,24 +157,106 @@ func TestSubscriptionFlow(t *testing.T) {
 	if token, ok := emailSender.sentTokens[testEmail]; !ok || token != sub.ConfirmToken {
 		t.Fatalf("expected email verification to be sent with token %s, got %s", sub.ConfirmToken, token)
 	}
+}
 
-	// Confirm
-	w = performRequest(router, http.MethodGet, "/confirm/"+sub.ConfirmToken, nil, nil)
+func TestConfirm_Success(t *testing.T) {
+	db := getCleanDB(t)
+	router, ghServer, _ := setupTestEnv(t, db)
+	defer ghServer.Close()
+
+	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
+	db.Create(&repo)
+
+	sub := infraDB.Subscription{
+		Email:        "user@example.com",
+		RepositoryID: repo.ID,
+		Status:       infraDB.StatusPending,
+		ConfirmToken: "11111222223333344444555556666677",
+	}
+	db.Create(&sub)
+
+	w := performRequest(router, http.MethodGet, "/confirm/"+sub.ConfirmToken, nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d. Body: %s", w.Code, w.Body.String())
 	}
+
 	apiToken := w.Header().Get("X-Api-Token")
+	if apiToken == "" {
+		t.Fatalf("expected X-Api-Token header, got none")
+	}
 
-	// Get Subscriptions
-	w = performRequest(router, http.MethodGet, "/subscriptions?email="+testEmail, nil, map[string]string{"Authorization": "Bearer " + apiToken})
+	var updatedSub infraDB.Subscription
+	db.First(&updatedSub, sub.ID)
+	if updatedSub.Status != infraDB.StatusActive {
+		t.Fatalf("expected status %s, got %s", infraDB.StatusActive, updatedSub.Status)
+	}
+}
+
+func TestGetSubscriptions_Success(t *testing.T) {
+	db := getCleanDB(t)
+	router, ghServer, _ := setupTestEnv(t, db)
+	defer ghServer.Close()
+
+	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
+	db.Create(&repo)
+
+	sub := infraDB.Subscription{
+		Email:        "user@example.com",
+		RepositoryID: repo.ID,
+		Status:       infraDB.StatusActive,
+		ConfirmToken: "11111222223333344444555556666677",
+		APIToken:     "12345678901234567890123456789012",
+	}
+	db.Create(&sub)
+
+	w := performRequest(router, http.MethodGet, "/subscriptions?email="+sub.Email, nil, map[string]string{
+		"Authorization": "Bearer " + sub.APIToken,
+	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d. Body: %s", w.Code, w.Body.String())
 	}
 
-	// Unsubscribe
-	w = performRequest(router, http.MethodGet, "/unsubscribe/"+sub.ConfirmToken, nil, map[string]string{"Authorization": "Bearer " + apiToken})
+	var items []SubscriptionItem
+	if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+		t.Fatalf("failed to parse response body: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Repo != "testowner/testrepo" {
+		t.Errorf("expected repo testowner/testrepo, got %s", items[0].Repo)
+	}
+}
+
+func TestUnsubscribe_Success(t *testing.T) {
+	db := getCleanDB(t)
+	router, ghServer, _ := setupTestEnv(t, db)
+	defer ghServer.Close()
+
+	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
+	db.Create(&repo)
+
+	sub := infraDB.Subscription{
+		Email:        "user@example.com",
+		RepositoryID: repo.ID,
+		Status:       infraDB.StatusActive,
+		ConfirmToken: "11111222223333344444555556666677",
+		APIToken:     "12345678901234567890123456789012",
+	}
+	db.Create(&sub)
+
+	w := performRequest(router, http.MethodGet, "/unsubscribe/"+sub.ConfirmToken, nil, map[string]string{
+		"Authorization": "Bearer " + sub.APIToken,
+	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	var updatedSub infraDB.Subscription
+	db.First(&updatedSub, sub.ID)
+	if updatedSub.Status != infraDB.StatusUnsubscribed {
+		t.Fatalf("expected status %s, got %s", infraDB.StatusUnsubscribed, updatedSub.Status)
 	}
 }
 
@@ -407,11 +488,11 @@ func TestGetSubscriptions_Unauthorized(t *testing.T) {
 	db.Create(&infraDB.Subscription{
 		Email:    "user@example.com",
 		Status:   infraDB.StatusActive,
-		APIToken: "correct_token_123456789012345678",
+		APIToken: "11111222223333344444555556666677",
 	})
 
 	w := performRequest(router, http.MethodGet, "/subscriptions?email=user@example.com", nil, map[string]string{
-		"Authorization": "Bearer wrong_token_1234567890123456789",
+		"Authorization": "Bearer 99999888887777766666555554444433",
 	})
 
 	if w.Code != http.StatusUnauthorized {
