@@ -82,12 +82,12 @@ func Get() *gorm.DB {
 		dsn := config.Get().DBDSN
 		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 		if err != nil {
-			panic("failed to connect to database: " + err.Error())
+			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
 
 		err = db.AutoMigrate(&Repository{}, &Subscription{})
 		if err != nil {
-			panic("failed to migrate database: " + err.Error())
+			logger.Log.Fatal("failed to migrate database", zap.Error(err))
 		}
 
 		instance = db
