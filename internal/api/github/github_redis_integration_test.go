@@ -200,7 +200,10 @@ func TestCacheTransport_CacheMiss_SetsCache(t *testing.T) {
 	}
 
 	// Second call hits cache
-	resp2, _ := client.Do(req)
+	resp2, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("unexpected error on second call: %v", err)
+	}
 	resp2.Body.Close()
 
 	if callCount != 1 {
