@@ -34,6 +34,8 @@ func main() {
 	logger.InitLogger(os.Getenv("ELASTICSEARCH_URL"), "github-scanner-logs")
 	defer logger.Sync()
 
+	logger.Log.Info("configuration loaded", zap.String("environment", cfg.AppEnv))
+
 	orm := db.Get()
 	defer db.Close()
 

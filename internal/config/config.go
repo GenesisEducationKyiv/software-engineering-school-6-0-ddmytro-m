@@ -147,8 +147,6 @@ func Get() *Config {
 			SMTP:     getSMTPConfig(),
 			Redis:    getRedisConfig(),
 		}
-
-		fmt.Printf("configuration loaded for environment: %s\n", env)
 	})
 
 	return instance
