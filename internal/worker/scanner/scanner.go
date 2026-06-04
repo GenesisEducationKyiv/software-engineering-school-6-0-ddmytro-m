@@ -246,7 +246,7 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 
 	case 403, 429:
 		s.limiter.SetLimit(0)
-		logger.Log.Error("critical limit hit on repo check. limiter frozen.", zap.Int("status_code", repoResp.StatusCode))
+		logger.Log.Error("critical limit hit on repo check. limiter frozen.")
 		return
 
 	default:
@@ -274,11 +274,11 @@ func (s *Scanner) processRepo(ctx context.Context, repo *db.Repository) {
 
 	case 403, 429:
 		s.limiter.SetLimit(0)
-		logger.Log.Error("critical limit hit. limiter frozen.", zap.Int("status_code", releaseResp.StatusCode))
+		logger.Log.Error("critical limit hit. limiter frozen.")
 
 	default:
 		if releaseResp.Error != nil {
-			logger.Log.Error("error while getting latest release", zap.Error(releaseResp.Error))
+			logger.Log.Error("error while getting latest release", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(releaseResp.Error))
 		}
 	}
 }
