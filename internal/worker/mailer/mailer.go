@@ -166,7 +166,7 @@ func (m *Mailer) processMessage(ctx context.Context, workerID int, message redis
 		return
 	}
 
-	logger.Log.Info("processing event", zap.Int("worker_id", workerID), zap.String("event", string(msg.Event)), zap.String("email", msg.Email))
+	logger.Log.Info("processing event", zap.Int("worker_id", workerID), zap.String("event", string(msg.Event)))
 
 	subject, body, known := m.buildEmail(msg)
 	if !known {
@@ -225,11 +225,11 @@ func (m *Mailer) sendWithRetry(ctx context.Context, workerID int, email, subject
 	for attempt := range maxRetries {
 		err = m.smtpClient.SendEmail(ctx, email, subject, body)
 		if err == nil {
-			logger.Log.Info("sent email", zap.Int("worker_id", workerID), zap.String("email", email))
+			logger.Log.Info("sent email", zap.Int("worker_id", workerID))
 			return nil
 		}
 
-		logger.Log.Error("failed to send email", zap.Int("worker_id", workerID), zap.String("email", email), zap.Int("attempt", attempt+1), zap.Int("max_retries", maxRetries), zap.Error(err))
+		logger.Log.Error("failed to send email", zap.Int("worker_id", workerID), zap.Int("attempt", attempt+1), zap.Int("max_retries", maxRetries), zap.Error(err))
 
 		if attempt < maxRetries-1 {
 			select {
