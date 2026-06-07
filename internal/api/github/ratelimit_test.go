@@ -3,6 +3,7 @@
 package github
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -179,5 +180,87 @@ func TestRateLimitTransport_ConcurrentSafety(t *testing.T) {
 	}
 	if !limits.ResetAt.Equal(time.Unix(1372700873, 0)) {
 		t.Errorf("Expected ResetAt 1372700873, got %v", limits.ResetAt)
+	}
+}
+
+func TestRateLimitTransport_RoundTrip_NilTransport(t *testing.T) {
+	rl := NewRateLimitTransport(nil, RateLimits{})
+	req, err := http.NewRequest("GET", "http://localhost:0/dummy", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	_, err = rl.RoundTrip(req)
+	if err == nil {
+		t.Error("Expected an error from default transport, got nil")
+	}
+}
+
+func TestRateLimitTransport_RoundTrip_Error(t *testing.T) {
+	expectedErr := errors.New("roundtrip error")
+	transport := &mockTransport{
+		roundTripFunc: func(req *http.Request) (*http.Response, error) {
+			return nil, expectedErr
+		},
+	}
+	rl := NewRateLimitTransport(transport, RateLimits{})
+	req, _ := http.NewRequest("GET", "/", nil)
+	_, err := rl.RoundTrip(req)
+	if err != expectedErr {
+		t.Errorf("Expected error %v, got %v", expectedErr, err)
+	}
+}
+
+func TestGetBaseRateLimits(t *testing.T) {
+	if got := GetBaseRateLimits(""); got.Limit != 60 {
+		t.Errorf("Expected unauthenticated limit 60, got %d", got.Limit)
+	}
+	if got := GetBaseRateLimits("token"); got.Limit != 5000 {
+		t.Errorf("Expected authenticated limit 5000, got %d", got.Limit)
+	}
+}
+
+func TestGetUnauthenticatedRateLimits(t *testing.T) {
+	if rl := GetUnauthenticatedRateLimits(); rl.Limit != 60 || rl.Remaining != 60 || rl.ResetAt.IsZero() {
+		t.Errorf("Unexpected unauthenticated rate limits: %+v", rl)
+	}
+}
+
+func TestGetAuthenticatedRateLimits(t *testing.T) {
+	if rl := GetAuthenticatedRateLimits(); rl.Limit != 5000 || rl.Remaining != 5000 || rl.ResetAt.IsZero() {
+		t.Errorf("Unexpected authenticated rate limits: %+v", rl)
+	}
+}
+
+func TestRateLimitTransport_GetRateLimits(t *testing.T) {
+	expected := RateLimits{
+		Limit:      5000,
+		Remaining:  4999,
+		ResetAt:    time.Now().Add(time.Hour).Truncate(time.Second),
+		RetryAfter: time.Now().Add(time.Minute).Truncate(time.Second),
+	}
+
+	rl := NewRateLimitTransport(nil, expected)
+
+	// 1. Verify that the mutex is actually used by simulating a write-locked state
+	rl.mu.Lock()
+	ch := make(chan RateLimits)
+	go func() {
+		ch <- rl.GetRateLimits()
+	}()
+
+	select {
+	case <-ch:
+		t.Fatal("GetRateLimits did not wait for the mutex to be unlocked")
+	case <-time.After(50 * time.Millisecond):
+		// Expected behavior: blocked by the write lock
+	}
+
+	// 2. Verify that it returns the valid data once unlocked
+	rl.mu.Unlock()
+	got := <-ch
+
+	if got.Limit != expected.Limit || got.Remaining != expected.Remaining {
+		t.Errorf("Expected limit/remaining %d/%d, got %d/%d", expected.Limit, expected.Remaining, got.Limit, got.Remaining)
 	}
 }

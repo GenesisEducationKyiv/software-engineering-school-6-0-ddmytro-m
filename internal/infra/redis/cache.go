@@ -12,6 +12,11 @@ type Cache struct {
 	client *goredis.Client
 }
 
+// NewCacheWithAddr creates a new instance of the Cache with a default Redis client.
+func NewCacheWithAddr(addr string) *Cache {
+	return &Cache{client: GetClient(addr)}
+}
+
 // NewCacheWithClient creates a new instance of the Cache with a provided Redis client.
 func NewCacheWithClient(client *goredis.Client) *Cache {
 	return &Cache{client: client}

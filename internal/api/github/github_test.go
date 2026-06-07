@@ -166,3 +166,69 @@ func TestGetRepository_InvalidBaseURL(t *testing.T) {
 		t.Error("expected error due to invalid base URL, got nil")
 	}
 }
+
+func TestGetLatestRelease_200_ParsesData(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/releases/latest" {
+			t.Errorf("expected path /repos/owner/repo/releases/latest, got %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":123,"tag_name":"v1.0.0","html_url":"https://github.com/owner/repo/releases/tag/v1.0.0"}`))
+	})
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", "")
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+	if resp.Data.ID != 123 {
+		t.Errorf("ID = %d, want 123", resp.Data.ID)
+	}
+	if resp.Data.TagName != "v1.0.0" {
+		t.Errorf("TagName = %q, want v1.0.0", resp.Data.TagName)
+	}
+	if resp.Data.URL != "https://github.com/owner/repo/releases/tag/v1.0.0" {
+		t.Errorf("URL = %q, want https://github.com/owner/repo/releases/tag/v1.0.0", resp.Data.URL)
+	}
+}
+
+func TestGetLatestRelease_304_PassesETag(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != `"etag-1"` {
+			t.Errorf("expected ETag \"etag-1\", got %q", r.Header.Get("If-None-Match"))
+		}
+		w.WriteHeader(http.StatusNotModified)
+	})
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", `"etag-1"`)
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+	if resp.StatusCode != 304 {
+		t.Errorf("StatusCode = %d, want 304", resp.StatusCode)
+	}
+}
+
+func TestGetLatestRelease_404_ReturnsAPIError(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", "")
+
+	var apiErr *APIError
+	if !errors.As(resp.Error, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", resp.Error, resp.Error)
+	}
+}
+
+func TestGetLatestRelease_InvalidBaseURL(t *testing.T) {
+	c := NewClient(WithBaseURL("://invalid-url")) // invalid format to force url.Parse to fail
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", "")
+	if resp.Error == nil {
+		t.Error("expected error due to invalid base URL, got nil")
+	}
+}

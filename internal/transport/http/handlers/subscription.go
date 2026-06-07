@@ -13,23 +13,27 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
+// EmailSender defines the interface for sending emails.
+type EmailSender interface {
+	SendEmailVerification(email, token string) error
+}
+
 // SubscriptionHandler handles HTTP requests related to subscriptions.
 type SubscriptionHandler struct {
-	db       *gorm.DB
-	ghClient *github.Client
-	emailMQ  *mq.EmailMQ
+	db          *gorm.DB
+	ghClient    *github.Client
+	emailSender EmailSender
 }
 
 // NewSubscriptionHandler creates a new instance of SubscriptionHandler.
-func NewSubscriptionHandler(db *gorm.DB, ghClient *github.Client, emailMQ *mq.EmailMQ) *SubscriptionHandler {
+func NewSubscriptionHandler(db *gorm.DB, ghClient *github.Client, emailSender EmailSender) *SubscriptionHandler {
 	return &SubscriptionHandler{
-		db:       db,
-		ghClient: ghClient,
-		emailMQ:  emailMQ,
+		db:          db,
+		ghClient:    ghClient,
+		emailSender: emailSender,
 	}
 }
 
@@ -180,8 +184,8 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 	}
 
-	if h.emailMQ != nil {
-		if err := h.emailMQ.SendEmailVerification(sub.Email, sub.ConfirmToken); err != nil {
+	if h.emailSender != nil {
+		if err := h.emailSender.SendEmailVerification(sub.Email, sub.ConfirmToken); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue verification email"})
 			return
 		}

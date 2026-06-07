@@ -132,7 +132,9 @@ func setupPostgresContainer(ctx context.Context) (testcontainers.Container, *gor
 
 func getCleanDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	testDB.Exec("TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY CASCADE")
+	if err := testDB.Exec("TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY CASCADE").Error; err != nil {
+		t.Fatalf("failed to truncate db: %v", err)
+	}
 	return testDB
 }
 
@@ -237,7 +239,9 @@ func repoAndReleaseHandler(owner, name string, repoBody, releaseBody string, rep
 			w.Header().Set("ETag", `"etag-repo"`)
 			w.WriteHeader(repoStatus)
 			if repoBody != "" {
-				w.Write([]byte(repoBody))
+				if _, err := w.Write([]byte(repoBody)); err != nil {
+					log.Printf("failed to write repo response: %v", err)
+				}
 			}
 		case releasePath:
 			w.Header().Set("ETag", `"etag-release-new"`)
@@ -246,7 +250,9 @@ func repoAndReleaseHandler(owner, name string, repoBody, releaseBody string, rep
 			w.Header().Set("X-RateLimit-Reset", "9999999999")
 			w.WriteHeader(releaseStatus)
 			if releaseBody != "" {
-				w.Write([]byte(releaseBody))
+				if _, err := w.Write([]byte(releaseBody)); err != nil {
+					log.Printf("failed to write release response: %v", err)
+				}
 			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -323,7 +329,9 @@ func TestProcessRepo_RepoMoved_NotifiesAndUnsubscribes(t *testing.T) {
 		if r.URL.Path == repoPath {
 			w.WriteHeader(http.StatusOK)
 			// return a different ID (99 instead of 42) to trigger moved logic
-			w.Write([]byte(`{"id":99,"full_name":"golang/go"}`))
+			if _, err := w.Write([]byte(`{"id":99,"full_name":"golang/go"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 			return
 		}
 		t.Errorf("unexpected request path: %s", r.URL.Path)
@@ -416,7 +424,9 @@ func TestProcessRepo_RepoNotFound_SkipsRelease(t *testing.T) {
 		repoPath := fmt.Sprintf("/repos/%s/%s", repo.Owner, repo.Name)
 		if r.URL.Path == repoPath {
 			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"message":"Not Found"}`))
+			if _, err := w.Write([]byte(`{"message":"Not Found"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 			return
 		}
 		t.Error("release endpoint should not be called when repo returns 404")
@@ -449,7 +459,9 @@ func TestProcessRepo_RepoCheckRateLimited_FreezesLimiterSkipsRelease(t *testing.
 		repoPath := fmt.Sprintf("/repos/%s/%s", repo.Owner, repo.Name)
 		if r.URL.Path == repoPath {
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"message":"rate limit exceeded"}`))
+			if _, err := w.Write([]byte(`{"message":"rate limit exceeded"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 			return
 		}
 		t.Error("release endpoint should not be called when repo check is rate-limited")
@@ -473,7 +485,9 @@ func TestProcessRepo_RepoETagCachedOn304(t *testing.T) {
 	// repo already has an ETag stored from a previous 200
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
 	repo.ETag = `"etag-repo-stored"`
-	dbConn.Model(repo).Update("e_tag", repo.ETag)
+	if err := dbConn.Model(repo).Update("e_tag", repo.ETag).Error; err != nil {
+		t.Fatalf("failed to update repo: %v", err)
+	}
 
 	releaseCallCount := 0
 	_, ghClient := newGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -508,7 +522,9 @@ func TestProcessRepo_403_FreezesLimiter(t *testing.T) {
 
 	_, ghClient := newGitHubServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"message":"rate limit exceeded"}`))
+		if _, err := w.Write([]byte(`{"message":"rate limit exceeded"}`)); err != nil {
+			t.Errorf("failed to write response: %v", err)
+		}
 	})
 
 	s := newScanner(dbConn, ghClient, nil, &captureNotifier{})
@@ -529,10 +545,14 @@ func TestProcessRepo_OnlyActiveSubscriptionsNotified(t *testing.T) {
 	_ = active
 
 	pending := seedSubscription(t, dbConn, repo.ID, "pending@example.com")
-	dbConn.Model(pending).Update("status", db.StatusPending)
+	if err := dbConn.Model(pending).Update("status", db.StatusPending).Error; err != nil {
+		t.Fatalf("failed to update pending subscription: %v", err)
+	}
 
 	unsub := seedSubscription(t, dbConn, repo.ID, "unsub@example.com")
-	dbConn.Model(unsub).Update("status", db.StatusUnsubscribed)
+	if err := dbConn.Model(unsub).Update("status", db.StatusUnsubscribed).Error; err != nil {
+		t.Fatalf("failed to update unsubscribed subscription: %v", err)
+	}
 
 	_, ghClient := newGitHubServer(t, repoAndReleaseHandler(
 		"golang", "go",
@@ -557,7 +577,9 @@ func TestProcessRepo_StatusRestoredToIdleAfterProcessing(t *testing.T) {
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
 	// simulate that it was picked up by the producer
-	dbConn.Model(repo).Update("status", db.StatusProcessing)
+	if err := dbConn.Model(repo).Update("status", db.StatusProcessing).Error; err != nil {
+		t.Fatalf("failed to update repo status: %v", err)
+	}
 
 	_, ghClient := newGitHubServer(t, repoAndReleaseHandler(
 		"golang", "go",
@@ -690,10 +712,14 @@ func TestRecover_ResetsProcessingToIdle(t *testing.T) {
 	dbConn := getCleanDB(t)
 
 	repo1 := seedRepo(t, dbConn, 1, "org", "repo1", "v1", "")
-	dbConn.Model(repo1).Update("status", db.StatusProcessing)
+	if err := dbConn.Model(repo1).Update("status", db.StatusProcessing).Error; err != nil {
+		t.Fatalf("failed to update repo1 status: %v", err)
+	}
 
 	repo2 := seedRepo(t, dbConn, 2, "org", "repo2", "v1", "")
-	dbConn.Model(repo2).Update("status", db.StatusIdle)
+	if err := dbConn.Model(repo2).Update("status", db.StatusIdle).Error; err != nil {
+		t.Fatalf("failed to update repo2 status: %v", err)
+	}
 
 	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}), &captureNotifier{})
 	s.recover()
@@ -772,18 +798,26 @@ func TestScanner_Integration_MultipleSubscribersDifferentRepos(t *testing.T) {
 		switch r.URL.Path {
 		case "/repos/org/project-a":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"id":1,"full_name":"org/project-a"}`))
+			if _, err := w.Write([]byte(`{"id":1,"full_name":"org/project-a"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 		case "/repos/org/project-b":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"id":2,"full_name":"org/project-b"}`))
+			if _, err := w.Write([]byte(`{"id":2,"full_name":"org/project-b"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 		case "/repos/org/project-a/releases/latest":
 			w.Header().Set("ETag", `"etag-a-new"`)
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"id":1,"tag_name":"v1.1.0","html_url":"https://github.com/org/project-a/releases/tag/v1.1.0"}`))
+			if _, err := w.Write([]byte(`{"id":1,"tag_name":"v1.1.0","html_url":"https://github.com/org/project-a/releases/tag/v1.1.0"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 		case "/repos/org/project-b/releases/latest":
 			w.Header().Set("ETag", `"etag-b-new"`)
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"id":2,"tag_name":"v2.1.0","html_url":"https://github.com/org/project-b/releases/tag/v2.1.0"}`))
+			if _, err := w.Write([]byte(`{"id":2,"tag_name":"v2.1.0","html_url":"https://github.com/org/project-b/releases/tag/v2.1.0"}`)); err != nil {
+				t.Errorf("failed to write response: %v", err)
+			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
