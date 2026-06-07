@@ -2,18 +2,40 @@
 
 ## 1. System Architecture
 
-The system is designed as a **modular monolith** to meet the project requirements while maintaining a clear separation of concerns between the API, the scanning engine, and the notification system.
+The system is designed as **two independent microservices** with clearly demarcated domain boundaries. Each service owns its own concern and communicates with the other exclusively through Redis Streams.
 
-### Core Components
-- **API Server (HTTP/gRPC)**: Handles user requests for subscriptions and verification. It secures sensitive endpoints using an API Authorization Token (X-API-TOKEN).
+### Microservices
+
+| Service | Binary | Responsibility |
+|---------|--------|----------------|
+| **Server** | `cmd/server/main.go` | Subscription HTTP API + GitHub repository scanner |
+| **Mailer** | `cmd/mailer/main.go` | Email delivery consumer (Redis Streams → SMTP) |
+
+### Core Components (Server)
+- **API Server**: Handles user requests for subscriptions and verification. It secures sensitive endpoints using an API Authorization Token (X-API-TOKEN). The `SubscriptionHandler` depends on `SubscriptionRepository` and `RepoResolver` interfaces — no direct GORM or GitHub client coupling.
 - **Scanner (Background Worker)**: An adaptive engine that identifies repositories due for a check and manages GitHub API quota.
-- **Notifier/Mailer (Background Worker)**: Consumes events from a Redis-based Message Queue (MQ) to send emails via SMTP with retry logic.
 
-### Storage & Infrastructure:
+### Core Component (Mailer)
+- **Notifier/Mailer (Background Worker)**: Consumes events from the Redis Streams Message Queue to send emails via SMTP with retry logic.
+
+### Storage & Infrastructure
 - **PostgreSQL/GORM**: Stores subscriptions, repository metadata (including ETags), and scan history.
 - **Redis**: Acts as both a high-speed cache for GitHub API responses and the backbone for the reliable Message Queue (Redis Streams).
 
-## 2. Functional Requirements
+## 2. Modular Boundaries
+
+Each module exposes its behaviour through interfaces, not concrete types. Cross-cutting concerns are never shared by direct struct reference.
+
+| Module | Interface | Implemented by |
+|--------|-----------|----------------|
+| `handlers` | `SubscriptionRepository` | `gormSubscriptionStore` in `handlers/store.go` |
+| `handlers` | `RepoResolver` | `*github.Client` (structural — no wrapper needed) |
+| `handlers` | `EmailSender` | `*mq.EmailMQ` |
+| `worker/scanner` | `RepositoryStore` | `gormStore` in `scanner/store.go` |
+| `worker/scanner` | `RepoProcessor` | `*processor` |
+| `worker/mailer` | (reads Redis Stream) | `redis.Stream` via `mq.EmailMQ` |
+
+## 3. Functional Requirements
 
 - **FR1: Subscription Management**: The system must provide an HTTP API for users to subscribe to public GitHub repositories.
 - **FR2: New Release Detection**: The system must periodically scan subscribed repositories to check for new software releases.
@@ -24,7 +46,7 @@ The system is designed as a **modular monolith** to meet the project requirement
 - **FR7: Crash Recovery**: On startup, the scanner must automatically identify and reset the status of any repositories that were in a "processing" state, ensuring they can be scanned again in the next cycle.
 - **FR8: Selective Notifications**: Notifications are sent only to subscribers with an "active" status.
 
-## 3. Non-Functional Requirements
+## 4. Non-Functional Requirements
 
 The system is designed to meet the following non-functional requirements:
 
@@ -48,7 +70,7 @@ The system is designed to meet the following non-functional requirements:
 - **NFR5: Observability**
     - **Metrics Exposition**: The API server must expose key operational metrics (e.g., request latency, API rate limit status) in a Prometheus-compatible format via a `/metrics` endpoint for monitoring and alerting.
 
-## 4. GitHub Scanner Logic
+## 5. GitHub Scanner Logic
 
 The scanner uses a Producer-Consumer pattern to handle high volumes of repositories efficiently without triggering GitHub's secondary rate limits.
 
@@ -62,7 +84,7 @@ To avoid 429 errors and secondary limit bans, the scanner dynamically calculates
 ### ETag Optimization (FR4, NFR1)
 To minimize quota consumption, the system stores the ETag of every repository and release. By sending these in the If-None-Match header, the service can receive a 304 Not Modified response, which consumes significantly fewer API points and zero processing time for unchanged data.
 
-## 5. Notification Engine
+## 6. Notification Engine
 
 The notification system is designed to be fault-tolerant, ensuring that no release notification is lost even if a worker crashes or the SMTP server is temporarily unavailable.
 - **Redis Streams MQ**: Notifications are published as events (e.g., EventNewRelease).

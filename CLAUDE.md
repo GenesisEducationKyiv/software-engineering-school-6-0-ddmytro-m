@@ -44,6 +44,11 @@ Gin router with a Prometheus middleware. `SubscriptionHandler` owns four routes:
 - `GET /unsubscribe/:token` — requires `Authorization: Bearer <api_token>` to unsubscribe
 - `GET /subscriptions?email=...` — requires Bearer token, lists non-unsubscribed subscriptions
 
+`SubscriptionHandler` depends on three interfaces (defined in `handlers/store.go`):
+- `SubscriptionRepository` — all DB access; implemented by `gormSubscriptionStore`
+- `RepoResolver` — GitHub repo lookup; satisfied structurally by `*github.Client`
+- `EmailSender` — queues verification/notification emails; satisfied by `*mq.EmailMQ`
+
 ### GitHub API transport stack (`internal/api/github/`)
 Requests flow through a layered `http.RoundTripper` chain built in `main.go`:
 ```
@@ -87,7 +92,7 @@ Tests use build tags. Unit tests are self-contained; integration tests use **tes
 
 Architecture docs and ADRs are in `docs/`:
 - `docs/system_design.md` — high-level system design
-- `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ)
+- `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ, modular microservices)
 
 ## Linting
 
