@@ -29,10 +29,3 @@ type UnexpectedStatusError struct{ StatusCode int }
 func (e *UnexpectedStatusError) Error() string {
 	return fmt.Sprintf("unexpected status code: %d", e.StatusCode)
 }
-
-type cachedError struct {
-	Type             string `json:"type"`
-	Message          string `json:"message,omitempty"`
-	Code             int    `json:"code,omitempty"`
-	DocumentationURL string `json:"documentation_url,omitempty"`
-}
