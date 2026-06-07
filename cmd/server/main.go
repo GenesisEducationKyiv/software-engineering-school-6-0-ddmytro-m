@@ -22,12 +22,12 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	if err := config.LoadEnv(); err != nil {
 		log.Fatal(err)
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	cfg := config.LoadServerConfig()
 
@@ -66,7 +66,8 @@ func main() {
 
 	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
 
-	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)
+	subStore := handlers.NewSubscriptionStore(orm)
+	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, emailMQ)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
 	go scn.Start(ctx)

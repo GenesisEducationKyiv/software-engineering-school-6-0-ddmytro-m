@@ -121,7 +121,8 @@ func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server, *mo
 
 	r := gin.Default()
 	emailSender := &mockEmailSender{sentTokens: make(map[string]string)}
-	handler := NewSubscriptionHandler(db, ghClient, emailSender)
+	store := NewSubscriptionStore(db)
+	handler := NewSubscriptionHandler(store, ghClient, emailSender)
 	handler.RegisterRoutes(r.Group("/"))
 
 	return r, ghServer, emailSender
