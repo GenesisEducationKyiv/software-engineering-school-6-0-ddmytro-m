@@ -24,12 +24,16 @@ Notifier uses Redis MQ to ensure messages are delivered to the clients.
 Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV is development by default).
 ```shell
 go mod download
-make run
+make run          # server (scanner + HTTP)
+make run:mailer   # mailer (separate terminal)
 ```
 
 ### Docker
+Starts postgres, redis, server, and mailer together:
 ```shell
-docker compose --env-file .env up app -d
+make docker:up
+make docker:down
+make docker:logs
 ```
 
 ## Testing

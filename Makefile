@@ -6,7 +6,7 @@ GO := go
 docker\:up:
 	docker compose --profile app up -d
 docker\:down:
-	docker compose down --remove-orphans
+	docker compose --profile app down --remove-orphans
 docker\:logs:
 	docker compose --profile app logs -f
 docker\:test:

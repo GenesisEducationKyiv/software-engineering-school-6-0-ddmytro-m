@@ -6,7 +6,7 @@ make test
 ```
 or
 ```shell
-test -v -tags="unit,integration" ./...
+go test -v -tags="unit,integration" ./...
 ```
 
 ### Run specific tests
