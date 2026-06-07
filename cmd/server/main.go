@@ -15,11 +15,9 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 
 	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/handlers"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/scanner"
 )
 
@@ -63,22 +61,18 @@ func main() {
 	emailMQ := mq.NewEmailMQ(deliveryPublisher)
 
 	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
-	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
-
-	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
 
 	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
 	go scn.Start(ctx)
-	go mlr.Start(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
 
-	log.Println("Scanner, Mailer, and HTTP Server are running...")
+	log.Println("Scanner and HTTP Server are running...")
 	<-ctx.Done()
 
 	log.Println("shutting down...")

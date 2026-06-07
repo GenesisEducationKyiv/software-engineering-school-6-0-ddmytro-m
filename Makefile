@@ -4,26 +4,32 @@ GO := go
 .PHONY: docker\:up docker\:down docker\:logs docker\:test
 
 docker\:up:
-	docker compose up app -d
+	docker compose --profile app up -d
 docker\:down:
 	docker compose down --remove-orphans
 docker\:logs:
-	docker compose logs -f app
+	docker compose --profile app logs -f
 docker\:test:
 	docker compose run --rm test
 
 
-.PHONY: run run\:server build build\:server test test\:all test\:unit test\:integration lint lint\:fix
+.PHONY: run run\:server run\:mailer build build\:server build\:mailer test test\:all test\:unit test\:integration lint lint\:fix
 
 run: run\:server
 
 run\:server:
 	$(GO) run cmd/server/main.go
 
-build: build\:server
+run\:mailer:
+	$(GO) run cmd/mailer/main.go
 
-build\:server: 
+build: build\:server build\:mailer
+
+build\:server:
 	$(GO) build -o bin/server cmd/server/main.go
+
+build\:mailer:
+	$(GO) build -o bin/mailer cmd/mailer/main.go
 
 test: test\:all
 
