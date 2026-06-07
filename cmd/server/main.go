@@ -25,7 +25,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Get()
+	if err := config.LoadEnv(); err != nil {
+		log.Fatal(err)
+	}
+
+	cfg := config.LoadServerConfig()
 
 	orm := db.Get()
 	defer db.Close()
