@@ -24,7 +24,7 @@ func (m *mockStream) Ack(ctx context.Context, group string, ids ...string) error
 	return nil
 }
 
-func (m *mockStream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []mq.Message, next string, err error) {
+func (m *mockStream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []Message, next string, err error) {
 	return nil, "", nil
 }
 
@@ -40,7 +40,7 @@ func (m *mockStream) PublishDeadLetter(ctx context.Context, msg any) error {
 	return nil
 }
 
-func (m *mockStream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]mq.Message, error) {
+func (m *mockStream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]Message, error) {
 	return nil, nil
 }
 
@@ -53,7 +53,7 @@ func (m mockMessage) ID() string      { return m.id }
 func (m mockMessage) Payload() []byte { return m.payload }
 
 func TestBuildEmail(t *testing.T) {
-	m := &Mailer{}
+	m := &Mailer[mockMessage]{}
 
 	tests := []struct {
 		name        string

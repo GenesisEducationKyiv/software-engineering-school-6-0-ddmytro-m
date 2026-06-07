@@ -17,7 +17,7 @@ type mockPublisher struct {
 	err       error
 }
 
-func (m *mockPublisher) Publish(ctx context.Context, msg any) error {
+func (m *mockPublisher) Publish(ctx context.Context, msg DeliveryMessage) error {
 	m.published = append(m.published, msg)
 	return m.err
 }

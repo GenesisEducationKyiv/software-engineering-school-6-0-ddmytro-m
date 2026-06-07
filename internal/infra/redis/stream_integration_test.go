@@ -127,7 +127,7 @@ func TestNewStream_NilClient(t *testing.T) {
 }
 
 func TestMessageAdapter_MissingPayload(t *testing.T) {
-	msg := NewMessageAdapter(goredis.XMessage{
+	msg := NewMessage(goredis.XMessage{
 		ID: "1-0",
 		Values: map[string]interface{}{
 			"wrong-field": "value",

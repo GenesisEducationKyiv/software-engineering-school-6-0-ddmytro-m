@@ -59,7 +59,8 @@ func main() {
 	)
 
 	stream := redis.NewStream(redisClient, mq.DeliveryStream)
-	emailMQ := mq.NewEmailMQ(stream)
+	deliveryPublisher := mq.NewDeliveryPublisher(stream)
+	emailMQ := mq.NewEmailMQ(deliveryPublisher)
 
 	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
 	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)

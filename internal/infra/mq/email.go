@@ -32,7 +32,29 @@ type DeliveryMessage struct {
 
 // Publisher defines the contract for publishing messages.
 type Publisher interface {
+	Publish(ctx context.Context, msg DeliveryMessage) error
+}
+
+// jsonPublisher is an unexported interface that defines the contract for a
+// logic-agnostic publisher that serializes messages to JSON, like redis.Stream.
+type jsonPublisher interface {
 	Publish(ctx context.Context, msg any) error
+}
+
+// deliveryPublisherAdapter adapts a jsonPublisher to the typed Publisher interface.
+type deliveryPublisherAdapter struct {
+	jp jsonPublisher
+}
+
+// Publish satisfies the Publisher interface by calling the underlying JSON publisher.
+func (a *deliveryPublisherAdapter) Publish(ctx context.Context, msg DeliveryMessage) error {
+	return a.jp.Publish(ctx, msg)
+}
+
+// NewDeliveryPublisher creates an adapter for the jsonPublisher to
+// satisfy the Publisher interface.
+func NewDeliveryPublisher(jp jsonPublisher) Publisher {
+	return &deliveryPublisherAdapter{jp: jp}
 }
 
 // EmailMQ is an implementation of a message queue for sending emails.
