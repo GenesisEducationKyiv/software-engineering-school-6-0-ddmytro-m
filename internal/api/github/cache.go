@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // Cache defines the interface for the caching mechanism used by the GitHub client.
@@ -104,8 +107,7 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		err = t.Cache.Set(ctx, cacheKey, b, ttl)
 		if err != nil {
-			// #nosec G706 -- False positive: %q safely escapes newlines, preventing log injection
-			log.Printf("cache transport: failed to set cache for %q: %v", cacheKey, err)
+			logger.Log.Error("cache transport: failed to set cache", zap.String("key", cacheKey), zap.Error(err))
 		}
 	}
 
