@@ -4,21 +4,19 @@ package redis
 import (
 	"sync"
 
-	"github.com/redis/go-redis/v9"
-
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 var (
-	instance *redis.Client
+	instance *goredis.Client
 	once     sync.Once
 )
 
-// Get returns a singleton instance of the Redis client.
-func Get() *redis.Client {
+// GetClient returns a singleton instance of the Redis client.
+func GetClient(addr string) *goredis.Client {
 	once.Do(func() {
-		instance = redis.NewClient(&redis.Options{
-			Addr: config.Get().Redis.Addr,
+		instance = goredis.NewClient(&goredis.Options{
+			Addr: addr,
 		})
 	})
 

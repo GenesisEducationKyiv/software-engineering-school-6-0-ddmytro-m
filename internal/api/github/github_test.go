@@ -10,49 +10,6 @@ import (
 	"time"
 )
 
-// internal limits
-func TestUpdateInternalLimits_StoresValidLimits(t *testing.T) {
-	c := NewClient()
-	reset := time.Now().Add(time.Hour).Truncate(time.Second)
-
-	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
-
-	got := c.getCachedRateLimits()
-	if got.Limit != 5000 || got.Remaining != 4000 {
-		t.Errorf("unexpected limits after update: %+v", got)
-	}
-	if !got.ResetAt.Equal(reset) {
-		t.Errorf("ResetAt = %v, want %v", got.ResetAt, reset)
-	}
-}
-
-func TestUpdateInternalLimits_AllMissingIsIgnored(t *testing.T) {
-	c := NewClient()
-	reset := time.Now().Add(time.Hour)
-
-	c.setCachedRateLimits(RateLimits{Limit: 5000, Remaining: 4000, ResetAt: reset})
-	c.setCachedRateLimits(RateLimits{Limit: -1, Remaining: -1})
-
-	if got := c.getCachedRateLimits(); got.Limit != 5000 {
-		t.Errorf("limits should not be overwritten by all-missing update; got Limit=%d", got.Limit)
-	}
-}
-
-func TestUpdateInternalLimits_RetryAfterOnlyMovesForward(t *testing.T) {
-	c := NewClient()
-
-	later := time.Now().Add(90 * time.Second)
-	earlier := time.Now().Add(30 * time.Second)
-
-	c.setCachedRateLimits(RateLimits{Limit: -1, Remaining: -1, RetryAfter: later})
-	c.setCachedRateLimits(RateLimits{Limit: -1, Remaining: -1, RetryAfter: earlier})
-
-	got := c.getCachedRateLimits()
-	if !got.RetryAfter.Equal(later) {
-		t.Errorf("RetryAfter should stay at later value; got %v, want %v", got.RetryAfter, later)
-	}
-}
-
 // get
 func TestGet_200_ParsedAndRateLimitsCached(t *testing.T) {
 	epoch := int64(1_700_000_000)
@@ -65,7 +22,7 @@ func TestGet_200_ParsedAndRateLimitsCached(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":1,"tag_name":"v1.0.0","html_url":"https://github.com/x/y/releases/tag/v1.0.0"}`))
 	})
 
-	resp := get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
+	resp := get(context.Background(), c.httpClient, c.BaseURL, "", CreateStatusHandler(jsonDecoder[LatestRelease]))
 
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %v", resp.Error)
@@ -76,14 +33,6 @@ func TestGet_200_ParsedAndRateLimitsCached(t *testing.T) {
 	if resp.ETag != `"etag-v1"` {
 		t.Errorf("ETag = %q, want \"etag-v1\"", resp.ETag)
 	}
-
-	limits := c.GetRateLimits(context.Background())
-	if limits.Remaining != 4998 {
-		t.Errorf("cached Remaining = %d, want 4998", limits.Remaining)
-	}
-	if !limits.ResetAt.Equal(time.Unix(epoch, 0)) {
-		t.Errorf("cached ResetAt = %v, want %v", limits.ResetAt, time.Unix(epoch, 0))
-	}
 }
 
 func TestGet_304_ETagSentAndZeroValueReturned(t *testing.T) {
@@ -93,7 +42,7 @@ func TestGet_304_ETagSentAndZeroValueReturned(t *testing.T) {
 		w.WriteHeader(http.StatusNotModified)
 	})
 
-	resp := get(context.Background(), c, []string{}, `"etag-v1"`, false, CreateStatusHandler(jsonDecoder[LatestRelease]))
+	resp := get(context.Background(), c.httpClient, c.BaseURL, `"etag-v1"`, CreateStatusHandler(jsonDecoder[LatestRelease]))
 
 	if resp.Error != nil {
 		t.Fatalf("unexpected error on 304: %v", resp.Error)
@@ -115,7 +64,7 @@ func TestGet_404_ReturnsAPIError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
 
-	resp := get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
+	resp := get(context.Background(), c.httpClient, c.BaseURL, "", CreateStatusHandler(jsonDecoder[LatestRelease]))
 
 	var apiErr *APIError
 	if !errors.As(resp.Error, &apiErr) {
@@ -126,42 +75,11 @@ func TestGet_404_ReturnsAPIError(t *testing.T) {
 	}
 }
 
-func TestGet_AuthorizationHeader_SentWhenTokenPresent(t *testing.T) {
-	var gotAuth string
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"tag_name":"v1"}`))
-	})
-
-	get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
-
-	if want := "Bearer test-token"; gotAuth != want {
-		t.Errorf("Authorization = %q, want %q", gotAuth, want)
-	}
-}
-
-func TestGet_AuthorizationHeader_OmittedWhenNoToken(t *testing.T) {
-	var gotAuth string
-	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"tag_name":"v1"}`))
-	})
-	c.token = ""
-
-	get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
-
-	if gotAuth != "" {
-		t.Errorf("expected no Authorization header, got %q", gotAuth)
-	}
-}
-
 func TestGet_NetworkFailure_ReturnsNetworkError(t *testing.T) {
 	srv, c := newTestServer(t, func(_ http.ResponseWriter, _ *http.Request) {})
 	srv.Close() // close before the request is made
 
-	resp := get(context.Background(), c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
+	resp := get(context.Background(), c.httpClient, c.BaseURL, "", CreateStatusHandler(jsonDecoder[LatestRelease]))
 
 	var ne *NetworkError
 	if !errors.As(resp.Error, &ne) {
@@ -178,7 +96,7 @@ func TestGet_CancelledContext_ReturnsNetworkError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	resp := get(ctx, c, []string{}, "", false, CreateStatusHandler(jsonDecoder[LatestRelease]))
+	resp := get(ctx, c.httpClient, c.BaseURL, "", CreateStatusHandler(jsonDecoder[LatestRelease]))
 
 	var ne *NetworkError
 	if !errors.As(resp.Error, &ne) {
@@ -244,6 +162,72 @@ func TestGetRepository_InvalidBaseURL(t *testing.T) {
 	c := NewClient(WithBaseURL("://invalid-url")) // invalid format to force url.Parse to fail
 
 	resp := c.GetRepository(context.Background(), "owner", "repo", "")
+	if resp.Error == nil {
+		t.Error("expected error due to invalid base URL, got nil")
+	}
+}
+
+func TestGetLatestRelease_200_ParsesData(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/releases/latest" {
+			t.Errorf("expected path /repos/owner/repo/releases/latest, got %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":123,"tag_name":"v1.0.0","html_url":"https://github.com/owner/repo/releases/tag/v1.0.0"}`))
+	})
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", "")
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+	if resp.Data.ID != 123 {
+		t.Errorf("ID = %d, want 123", resp.Data.ID)
+	}
+	if resp.Data.TagName != "v1.0.0" {
+		t.Errorf("TagName = %q, want v1.0.0", resp.Data.TagName)
+	}
+	if resp.Data.URL != "https://github.com/owner/repo/releases/tag/v1.0.0" {
+		t.Errorf("URL = %q, want https://github.com/owner/repo/releases/tag/v1.0.0", resp.Data.URL)
+	}
+}
+
+func TestGetLatestRelease_304_PassesETag(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != `"etag-1"` {
+			t.Errorf("expected ETag \"etag-1\", got %q", r.Header.Get("If-None-Match"))
+		}
+		w.WriteHeader(http.StatusNotModified)
+	})
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", `"etag-1"`)
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+	if resp.StatusCode != 304 {
+		t.Errorf("StatusCode = %d, want 304", resp.StatusCode)
+	}
+}
+
+func TestGetLatestRelease_404_ReturnsAPIError(t *testing.T) {
+	_, c := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", "")
+
+	var apiErr *APIError
+	if !errors.As(resp.Error, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", resp.Error, resp.Error)
+	}
+}
+
+func TestGetLatestRelease_InvalidBaseURL(t *testing.T) {
+	c := NewClient(WithBaseURL("://invalid-url")) // invalid format to force url.Parse to fail
+
+	resp := c.GetLatestRelease(context.Background(), "owner", "repo", "")
 	if resp.Error == nil {
 		t.Error("expected error due to invalid base URL, got nil")
 	}

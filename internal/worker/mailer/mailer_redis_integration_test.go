@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
-	redisDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.uber.org/zap"
@@ -23,7 +23,7 @@ import (
 
 // Mailer-Redis integration tests
 
-var testRedis *redis.Client
+var testRedis *goredis.Client
 
 func TestMain(m *testing.M) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -48,7 +48,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func setupRedisContainer(ctx context.Context) (testcontainers.Container, *redis.Client, error) {
+func setupRedisContainer(ctx context.Context) (testcontainers.Container, *goredis.Client, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "redis:7-alpine",
 		ExposedPorts: []string{"6379/tcp"},
@@ -67,12 +67,12 @@ func setupRedisContainer(ctx context.Context) (testcontainers.Container, *redis.
 		return nil, nil, err
 	}
 
-	client := redis.NewClient(&redis.Options{Addr: endpoint})
+	client := goredis.NewClient(&goredis.Options{Addr: endpoint})
 
 	return redisC, client, nil
 }
 
-func getCleanRedis(t *testing.T) *redis.Client {
+func getCleanRedis(t *testing.T) *goredis.Client {
 	t.Helper()
 	testRedis.FlushAll(context.Background())
 	return testRedis
@@ -82,7 +82,7 @@ func TestProcessMessage_ValidEvents(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	stream := redisDB.NewStream(rc, "test_stream")
+	stream := redis.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
 	if err := mailer.stream.EnsureConsumerGroup(ctx, mailer.group); err != nil {
@@ -101,12 +101,12 @@ func TestProcessMessage_ValidEvents(t *testing.T) {
 	for _, tc := range events {
 		t.Run(tc.name, func(t *testing.T) {
 			jsonPayload := fmt.Sprintf(`{"event": "%s", "email": "test@example.com", "repo": "owner/repo", "release": "v1.0.0", "payload": {"token": "12345"}}`, tc.event)
-			msg := redis.XMessage{
-				ID: "1-0",
-				Values: map[string]any{
-					"payload": jsonPayload,
-				},
-			}
+
+			msg := redis.NewMessage(goredis.XMessage{
+				ID:     "1-0",
+				Values: map[string]any{"payload": jsonPayload},
+			})
+
 			mailer.processMessage(ctx, 1, msg)
 		})
 	}
@@ -116,15 +116,17 @@ func TestProcessMessage_InvalidPayloadType(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	stream := redisDB.NewStream(rc, "test_stream")
+	stream := redis.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
-	msg := redis.XMessage{
-		ID: "1-0",
-		Values: map[string]interface{}{
-			"payload": 123, // invalid type
+	msg := redis.NewMessage(
+		goredis.XMessage{
+			ID: "1-0",
+			Values: map[string]any{
+				"payload": 123, // invalid type
+			},
 		},
-	}
+	)
 
 	mailer.processMessage(ctx, 1, msg)
 }
@@ -133,15 +135,17 @@ func TestProcessMessage_InvalidJSON(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx := context.Background()
 
-	stream := redisDB.NewStream(rc, "test_stream")
+	stream := redis.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
-	msg := redis.XMessage{
-		ID: "2-0",
-		Values: map[string]any{
-			"payload": `{"event": "broken`, // invalid JSON
+	msg := redis.NewMessage(
+		goredis.XMessage{
+			ID: "2-0",
+			Values: map[string]any{
+				"payload": `{"event": "broken`, // invalid JSON
+			},
 		},
-	}
+	)
 
 	mailer.processMessage(ctx, 1, msg)
 }
@@ -150,7 +154,7 @@ func TestMailer_StartAndConsume(t *testing.T) {
 	rc := getCleanRedis(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	stream := redisDB.NewStream(rc, "test_stream")
+	stream := redis.NewStream(rc, "test_stream")
 	mailer := NewMailer(stream, "test_group", 2, nil)
 
 	if err := stream.EnsureConsumerGroup(ctx, "test_group"); err != nil {
@@ -159,7 +163,7 @@ func TestMailer_StartAndConsume(t *testing.T) {
 
 	jsonPayload := fmt.Sprintf(`{"event": "%s", "email": "test@example.com", "repo": "owner/repo", "release": "v1.0.0"}`, mq.EventNewRelease)
 
-	err := rc.XAdd(ctx, &redis.XAddArgs{
+	err := rc.XAdd(ctx, &goredis.XAddArgs{
 		Stream: "test_stream",
 		Values: map[string]any{
 			"payload": jsonPayload,

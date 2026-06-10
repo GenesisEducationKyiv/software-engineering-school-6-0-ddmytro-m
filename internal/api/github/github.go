@@ -3,12 +3,9 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/http"
-	"net/url"
-	"sync"
-	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
@@ -16,26 +13,12 @@ import (
 
 // Client provides a client for interacting with the GitHub API.
 type Client struct {
-	token string
-
 	httpClient *http.Client
 	BaseURL    string
-
-	cache         *redis.Client
-	cacheTTL      time.Duration
-	cacheErrorTTL time.Duration
-
-	mu         sync.RWMutex
-	lastLimits RateLimits
 }
 
 // Option defines a functional configuration type for the GitHub Client.
 type Option func(*Client)
-
-// WithToken sets the GitHub personal access token for authentication.
-func WithToken(token string) Option {
-	return func(c *Client) { c.token = token }
-}
 
 // WithBaseURL overrides the default GitHub API base URL.
 func WithBaseURL(baseURL string) Option {
@@ -47,26 +30,11 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) { c.httpClient = httpClient }
 }
 
-// WithCache configures a Redis-based cache for API responses.
-func WithCache(client *redis.Client, ttl time.Duration, errorTTL time.Duration) Option {
-	return func(c *Client) {
-		c.cache = client
-		c.cacheTTL = ttl
-		c.cacheErrorTTL = errorTTL
-	}
-}
-
-// WithInitialRateLimits seeds the client with starting rate limit values.
-func WithInitialRateLimits(limits RateLimits) Option {
-	return func(c *Client) { c.lastLimits = limits }
-}
-
 // NewClient creates a new Client with the provided options.
 func NewClient(opts ...Option) *Client {
 	c := &Client{
 		httpClient: http.DefaultClient,
 		BaseURL:    "https://api.github.com",
-		lastLimits: RateLimits{Limit: -1, Remaining: -1},
 	}
 
 	for _, opt := range opts {
@@ -76,82 +44,10 @@ func NewClient(opts ...Option) *Client {
 	return c
 }
 
-func (c *Client) getCachedRateLimits() RateLimits {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lastLimits
-}
-
-func (c *Client) setCachedRateLimits(newLimits RateLimits) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !newLimits.IsValid() {
-		if !newLimits.RetryAfter.IsZero() && newLimits.RetryAfter.After(c.lastLimits.RetryAfter) {
-			c.lastLimits.RetryAfter = newLimits.RetryAfter
-		}
-		return
+func get[T any](ctx context.Context, c *http.Client, endpoint string, etag string, handler ResponseHandler[T]) Response[T] {
+	if c == nil {
+		c = http.DefaultClient
 	}
-
-	c.lastLimits.Limit = newLimits.Limit
-	c.lastLimits.Remaining = newLimits.Remaining
-	c.lastLimits.ResetAt = newLimits.ResetAt
-
-	if newLimits.RetryAfter.After(c.lastLimits.RetryAfter) {
-		c.lastLimits.RetryAfter = newLimits.RetryAfter
-	}
-}
-
-// GetBaseRateLimits returns the default rate limits based on whether a token is configured.
-func (c *Client) GetBaseRateLimits() RateLimits {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.token != "" {
-		return RateLimits{Limit: 5000, Remaining: 5000, ResetAt: time.Now().Add(1 * time.Hour)}
-	}
-
-	return RateLimits{Limit: 60, Remaining: 60, ResetAt: time.Now().Add(1 * time.Hour)}
-}
-
-// GetRateLimits retrieves the current rate limits, either from the cache or by making an API request.
-func (c *Client) GetRateLimits(ctx context.Context) RateLimits {
-	cached := c.getCachedRateLimits()
-	if cached.IsValid() {
-		return cached
-	}
-
-	response := get(ctx, c, []string{"rate_limit"}, "", false, func(res *http.Response) (RateLimits, error) {
-		return formatResponse[any](res, nil, nil).RateLimits, nil
-	})
-	return response.RateLimits
-}
-
-func get[T any](ctx context.Context, c *Client, path []string, etag string, cache bool, handler ResponseHandler[T]) Response[T] {
-	var endpoint string
-
-	if len(path) > 0 {
-		u, err := url.Parse(c.BaseURL)
-		if err != nil {
-			return Response[T]{Error: err}
-		}
-		endpoint = u.JoinPath(path...).String()
-	} else {
-		endpoint = c.BaseURL
-	}
-
-	if c.httpClient == nil {
-		c.httpClient = http.DefaultClient
-	}
-
-	var cacheKey string
-	if cache && c.cache != nil {
-		cacheKey = c.getCacheKey(endpoint)
-		if resp, ok := tryGetCache[T](ctx, c, cacheKey); ok {
-			return resp
-		}
-	}
-
-	var data T
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -161,11 +57,8 @@ func get[T any](ctx context.Context, c *Client, path []string, etag string, cach
 	if etag != "" {
 		req.Header.Set("If-None-Match", etag)
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
-	res, err := c.httpClient.Do(req)
+	res, err := c.Do(req)
 	if err != nil {
 		return Response[T]{Error: &NetworkError{err}}
 	}
@@ -178,13 +71,6 @@ func get[T any](ctx context.Context, c *Client, path []string, etag string, cach
 	data, execErr := handler(res)
 
 	formattedResponse := formatResponse(res, data, execErr)
-	if formattedResponse.RateLimits.IsValid() {
-		c.setCachedRateLimits(formattedResponse.RateLimits)
-	}
-
-	if cache && c.cache != nil {
-		trySetCache(ctx, c, cacheKey, formattedResponse)
-	}
 
 	return formattedResponse
 }
@@ -198,7 +84,8 @@ type Repository struct {
 // GetRepository fetches information about a GitHub repository.
 func (c *Client) GetRepository(ctx context.Context, owner, name, etag string) Response[Repository] {
 	handler := CreateStatusHandler(jsonDecoder[Repository])
-	return get(ctx, c, []string{"repos", owner, name}, etag, true, handler)
+	endpoint := fmt.Sprintf("%s/repos/%s/%s", c.BaseURL, owner, name)
+	return get(ctx, c.httpClient, endpoint, etag, handler)
 }
 
 // LatestRelease represents the latest release of a GitHub repository.
@@ -211,5 +98,6 @@ type LatestRelease struct {
 // GetLatestRelease fetches the latest release for a GitHub repository.
 func (c *Client) GetLatestRelease(ctx context.Context, owner, name, etag string) Response[LatestRelease] {
 	handler := CreateStatusHandler(jsonDecoder[LatestRelease])
-	return get(ctx, c, []string{"repos", owner, name, "releases", "latest"}, etag, true, handler)
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/releases/latest", c.BaseURL, owner, name)
+	return get(ctx, c.httpClient, endpoint, etag, handler)
 }
