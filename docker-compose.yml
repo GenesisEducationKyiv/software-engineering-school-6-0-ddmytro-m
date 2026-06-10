@@ -33,15 +33,12 @@ services:
       - SMTP_USER
       - SMTP_PASS
       - SMTP_FROM
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
 
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy   
 
   test:
     profiles:
@@ -93,6 +90,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["--strict.perms=false"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.13.4

@@ -31,7 +31,7 @@ func main() {
 
 	cfg := config.Get()
 
-	logger.InitLogger(os.Getenv("ELASTICSEARCH_URL"), "github-scanner-logs")
+	logger.InitLogger()
 	defer logger.Sync()
 
 	logger.Log.Info("configuration loaded", zap.String("environment", cfg.AppEnv))
