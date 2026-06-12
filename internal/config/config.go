@@ -138,12 +138,12 @@ func Get() *Config {
 		_ = godotenv.Load()
 
 		instance = &Config{
-			AppEnv: env,
-			DBDSN:  getDSN(),
-			GitHub:   getGithubConfig(env),
-			Scanner:  getScannerConfig(),
-			SMTP:     getSMTPConfig(),
-			Redis:    getRedisConfig(),
+			AppEnv:  env,
+			DBDSN:   getDSN(),
+			GitHub:  getGithubConfig(env),
+			Scanner: getScannerConfig(),
+			SMTP:    getSMTPConfig(),
+			Redis:   getRedisConfig(),
 		}
 	})
 
