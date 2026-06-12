@@ -3,6 +3,8 @@
 ## Status
 Accepted
 
+Amended by [ADR 005](005_rabbitmq_event_broker.md): Redis Streams remains the point-to-point command bus for email delivery, but domain events now flow through a RabbitMQ broker.
+
 ## Context
 
 The system requires a mechanism to send notifications (e.g., for new software releases, repository moves) to users asynchronously and reliably. The core requirements for this mechanism are:
