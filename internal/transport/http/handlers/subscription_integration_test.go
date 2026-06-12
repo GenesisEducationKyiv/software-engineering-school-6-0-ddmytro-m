@@ -18,12 +18,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"go.uber.org/zap"
 	gormPostgres "gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	infraDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 var testDB *gorm.DB
@@ -31,6 +33,8 @@ var testDB *gorm.DB
 func TestMain(m *testing.M) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	logger.Log = zap.NewNop()
 
 	container, orm, err := setupPostgresContainer(ctx)
 	if err != nil {
@@ -67,7 +71,7 @@ func setupPostgresContainer(ctx context.Context) (testcontainers.Container, *gor
 	}
 
 	orm, err := gorm.Open(gormPostgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
 		return nil, nil, err
