@@ -3,15 +3,16 @@ package scanner
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // Scanner periodically checks repositories for updates.
@@ -61,7 +62,7 @@ func (s *Scanner) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.producerInterval)
 	defer ticker.Stop()
 
-	log.Printf("scanner orchestrator online: min interval %v", s.minCheckInterval)
+	logger.Log.Info("scanner online", zap.Duration("min_interval", s.minCheckInterval))
 	s.producer.Produce(ctx, s.repoQueue)
 
 	for {
@@ -77,10 +78,10 @@ func (s *Scanner) Start(ctx context.Context) {
 }
 
 func (s *Scanner) recover() {
-	log.Println("Recovering stuck repositories...")
+	logger.Log.Info("Recovering stuck repositories...")
 
 	err := s.store.RecoverStuckRepos()
 	if err != nil {
-		log.Printf("Recovery error: %v", err)
+		logger.Log.Error("Recovery error", zap.Error(err))
 	}
 }

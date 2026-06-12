@@ -13,6 +13,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/mailer cmd/mailer/main.go
 FROM alpine:latest AS server
 RUN apk --no-cache add ca-certificates tzdata
 COPY --from=builder /bin/server /bin/server
+
 EXPOSE 8080
 ENTRYPOINT ["/bin/server"]
 

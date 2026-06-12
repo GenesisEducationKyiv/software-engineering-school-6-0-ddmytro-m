@@ -4,8 +4,11 @@ package github
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
+
+	"go.uber.org/zap"
+
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // Client provides a client for interacting with the GitHub API.
@@ -61,7 +64,7 @@ func get[T any](ctx context.Context, c *http.Client, endpoint string, etag strin
 	}
 	defer func() {
 		if cerr := res.Body.Close(); cerr != nil {
-			log.Printf("error closing response body: %v", cerr)
+			logger.Log.Error("error closing response body", zap.Error(cerr))
 		}
 	}()
 

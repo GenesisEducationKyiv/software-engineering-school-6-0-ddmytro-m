@@ -2,10 +2,12 @@ package scanner
 
 import (
 	"context"
-	"log"
 	"sync"
 
+	"go.uber.org/zap"
+
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // WorkerPool defines the contract for processing queued repositories.
@@ -29,7 +31,7 @@ func NewWorkerPool(processor RepoProcessor, quota QuotaManager, workerCount int)
 }
 
 func (w *domainWorkerPool) Start(ctx context.Context, wg *sync.WaitGroup, queue <-chan db.Repository) {
-	log.Printf("starting %d workers...", w.workerCount)
+	logger.Log.Info("starting workers", zap.Int("count", w.workerCount))
 	for i := 0; i < w.workerCount; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -43,19 +45,19 @@ func (w *domainWorkerPool) worker(ctx context.Context, id int, queue <-chan db.R
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("worker %d shutting down", id)
+			logger.Log.Info("worker shutting down", zap.Int("worker_id", id))
 			return
 		case r, ok := <-queue:
 			if !ok {
-				log.Printf("worker %d shutting down", id)
+				logger.Log.Info("worker shutting down", zap.Int("worker_id", id))
 				return
 			}
 
 			if err := w.quota.Wait(ctx); err != nil {
-				log.Printf("worker %d: limiter wait error: %v", id, err)
+				logger.Log.Error("worker limiter wait error", zap.Int("worker_id", id), zap.Error(err))
 				return
 			}
-			log.Printf("worker %d: processing %s/%s", id, r.Owner, r.Name)
+			logger.Log.Debug("processing repo", zap.Int("worker_id", id), zap.String("owner", r.Owner), zap.String("name", r.Name))
 			w.processor.ProcessRepo(ctx, &r)
 		}
 	}

@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 const (
@@ -65,12 +67,12 @@ func NewMailer[M Message](stream Stream[M], group string, workerCount int, smtpC
 // Start begins the mailer, starting workers and consuming messages from the stream.
 func (m *Mailer[M]) Start(ctx context.Context) {
 	if err := m.stream.EnsureConsumerGroup(ctx, m.group); err != nil {
-		log.Printf("mailer failed to ensure consumer group: %v", err)
+		logger.Log.Error("mailer failed to ensure consumer group", zap.Error(err))
 	}
 
 	hostname, _ := os.Hostname()
 	consumerName := fmt.Sprintf("%s-%d", hostname, os.Getpid())
-	log.Printf("mailer consumer %s started", consumerName)
+	logger.Log.Info("mailer consumer started", zap.String("consumer", consumerName))
 
 	// reclaim any messages that were in-flight when a previous instance crashed
 	// and have been pending longer than the idle threshold.
@@ -87,7 +89,7 @@ func (m *Mailer[M]) Start(ctx context.Context) {
 
 	for {
 		if ctx.Err() != nil {
-			log.Println("mailer shutting down, waiting for workers...")
+			logger.Log.Info("mailer shutting down, waiting for workers...")
 			close(m.msgQueue)
 			wg.Wait()
 			return
@@ -106,7 +108,7 @@ func (m *Mailer[M]) reclaimStalePending(ctx context.Context, consumerName string
 	for {
 		msgs, next, err := m.stream.AutoClaim(ctx, m.group, consumerName, stalePendingThreshold, start, 100)
 		if err != nil {
-			log.Printf("mailer: failed to autoclaim pending messages: %v", err)
+			logger.Log.Error("failed to autoclaim pending messages", zap.Error(err))
 			return
 		}
 		for _, msg := range msgs {
@@ -124,7 +126,7 @@ func (m *Mailer[M]) reclaimStalePending(ctx context.Context, consumerName string
 	}
 
 	if claimed > 0 {
-		log.Printf("mailer consumer %s: reclaimed %d stale pending messages", consumerName, claimed)
+		logger.Log.Info("reclaimed stale pending messages", zap.String("consumer", consumerName), zap.Int("claimed", claimed))
 	}
 }
 
@@ -134,7 +136,7 @@ func (m *Mailer[M]) consume(ctx context.Context, consumerName string) {
 		if errors.Is(err, context.Canceled) {
 			return
 		}
-		log.Printf("mailer consumer: error reading from stream: %v", err)
+		logger.Log.Error("error reading from stream", zap.Error(err))
 		select {
 		case <-ctx.Done():
 		case <-time.After(1 * time.Second):
@@ -152,15 +154,15 @@ func (m *Mailer[M]) consume(ctx context.Context, consumerName string) {
 }
 
 func (m *Mailer[M]) worker(ctx context.Context, id int) {
-	log.Printf("mailer worker %d started", id)
+	logger.Log.Info("mailer worker started", zap.Int("worker_id", id))
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("mailer worker %d shutting down", id)
+			logger.Log.Info("mailer worker shutting down", zap.Int("worker_id", id))
 			return
 		case message, ok := <-m.msgQueue:
 			if !ok {
-				log.Printf("mailer worker %d shutting down", id)
+				logger.Log.Info("mailer worker shutting down", zap.Int("worker_id", id))
 				return
 			}
 			m.processMessage(ctx, id, message)
@@ -171,30 +173,30 @@ func (m *Mailer[M]) worker(ctx context.Context, id int) {
 func (m *Mailer[M]) processMessage(ctx context.Context, workerID int, message M) {
 	payload := message.Payload()
 	if len(payload) == 0 {
-		log.Printf("mailer worker %d: invalid payload format for message %s", workerID, message.ID())
+		logger.Log.Error("invalid payload format", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()))
 		m.deadLetter(ctx, workerID, message, "invalid payload format")
 		return
 	}
 
 	var msg mq.DeliveryMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		log.Printf("mailer worker %d: failed to unmarshal payload %s: %v", workerID, message.ID(), err)
+		logger.Log.Error("failed to unmarshal payload", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()), zap.Error(err))
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("unmarshal error: %v", err))
 		return
 	}
 
-	log.Printf("mailer worker %d: processing event %s for %s", workerID, msg.Event, msg.Email)
+	logger.Log.Info("processing event", zap.Int("worker_id", workerID), zap.String("event", string(msg.Event)))
 
 	subject, body, known := m.buildEmail(msg)
 	if !known {
 		// Unknown event — acking silently would lose the message, dead-letter instead.
-		log.Printf("mailer worker %d: unknown event type %q for message %s", workerID, msg.Event, message.ID())
+		logger.Log.Error("unknown event type", zap.Int("worker_id", workerID), zap.String("event", string(msg.Event)), zap.String("message_id", message.ID()))
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("unknown event type: %q", msg.Event))
 		return
 	}
 
 	if m.smtpClient == nil {
-		log.Printf("mailer worker %d: smtp client is nil, cannot send message %s", workerID, message.ID())
+		logger.Log.Error("smtp client is nil", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()))
 		m.deadLetter(ctx, workerID, message, "smtp client not configured")
 		return
 	}
@@ -202,13 +204,13 @@ func (m *Mailer[M]) processMessage(ctx context.Context, workerID int, message M)
 	if err := m.sendWithRetry(ctx, workerID, msg.Email, subject, body); err != nil {
 		// All retries exhausted. Leave the message un-acked so XAUTOCLAIM
 		// can reassign it after the idle threshold, or dead-letter explicitly.
-		log.Printf("mailer worker %d: all retries exhausted for message %s, moving to dead-letter", workerID, message.ID())
+		logger.Log.Error("all retries exhausted for message, moving to dead-letter", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()))
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("smtp retries exhausted: %v", err))
 		return
 	}
 
 	if err := m.stream.Ack(ctx, m.group, message.ID()); err != nil {
-		log.Printf("mailer worker %d: failed to ack message %s: %v", workerID, message.ID(), err)
+		logger.Log.Error("failed to ack message", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()), zap.Error(err))
 	}
 }
 
@@ -242,12 +244,11 @@ func (m *Mailer[M]) sendWithRetry(ctx context.Context, workerID int, email, subj
 	for attempt := range maxRetries {
 		err = m.smtpClient.SendEmail(ctx, email, subject, body)
 		if err == nil {
-			log.Printf("mailer worker %d: sent email to %s", workerID, email)
+			logger.Log.Info("sent email", zap.Int("worker_id", workerID))
 			return nil
 		}
 
-		log.Printf("mailer worker %d: failed to send email to %s (attempt %d/%d): %v",
-			workerID, email, attempt+1, maxRetries, err)
+		logger.Log.Error("failed to send email", zap.Int("worker_id", workerID), zap.Int("attempt", attempt+1), zap.Int("max_retries", maxRetries), zap.Error(err))
 
 		if attempt < maxRetries-1 {
 			select {
@@ -273,12 +274,12 @@ func (m *Mailer[M]) deadLetter(ctx context.Context, workerID int, message M, rea
 	}
 
 	if err := m.stream.PublishDeadLetter(ctx, dlPayload); err != nil {
-		log.Printf("mailer worker %d: failed to publish dead-letter for message %s: %v", workerID, message.ID(), err)
+		logger.Log.Error("failed to publish dead-letter", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()), zap.Error(err))
 		// Do not ack — leave in PEL so it can be inspected or reclaimed.
 		return
 	}
 
 	if err := m.stream.Ack(ctx, m.group, message.ID()); err != nil {
-		log.Printf("mailer worker %d: failed to ack dead-lettered message %s: %v", workerID, message.ID(), err)
+		logger.Log.Error("failed to ack dead-lettered message", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()), zap.Error(err))
 	}
 }

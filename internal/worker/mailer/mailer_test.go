@@ -10,8 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
+
+func init() {
+	logger.Log = zap.NewNop()
+}
 
 type mockStream struct {
 	acked       []string
