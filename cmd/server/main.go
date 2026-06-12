@@ -29,10 +29,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Get()
-
 	logger.InitLogger()
 	defer logger.Sync()
+
+	cfg := config.Get()
 
 	logger.Log.Info("configuration loaded", zap.String("environment", cfg.AppEnv))
 

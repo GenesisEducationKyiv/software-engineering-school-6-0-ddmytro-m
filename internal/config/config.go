@@ -47,13 +47,12 @@ type RedisConfig struct {
 
 // Config holds the overall configuration for the application.
 type Config struct {
-	AppEnv   string
-	LogLevel string
-	DBDSN    string
-	GitHub   GithubConfig
-	Scanner  ScannerConfig
-	SMTP     SMTPConfig
-	Redis    RedisConfig
+	AppEnv  string
+	DBDSN   string
+	GitHub  GithubConfig
+	Scanner ScannerConfig
+	SMTP    SMTPConfig
+	Redis   RedisConfig
 }
 
 func getDSN() string {
@@ -139,9 +138,8 @@ func Get() *Config {
 		_ = godotenv.Load()
 
 		instance = &Config{
-			AppEnv:   env,
-			LogLevel: utils.GetEnv("LOG_LEVEL", "info"),
-			DBDSN:    getDSN(),
+			AppEnv: env,
+			DBDSN:  getDSN(),
 			GitHub:   getGithubConfig(env),
 			Scanner:  getScannerConfig(),
 			SMTP:     getSMTPConfig(),

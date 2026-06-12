@@ -12,7 +12,7 @@ import (
 var Log *zap.Logger
 
 // InitLogger initialises the global logger writing JSON to stdout.
-// The log level defaults to info and can be overridden via the LOG_LEVEL env var.
+// The log level is read from LOG_LEVEL env var and defaults to info.
 func InitLogger() {
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder

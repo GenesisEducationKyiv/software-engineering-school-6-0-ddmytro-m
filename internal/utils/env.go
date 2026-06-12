@@ -25,7 +25,7 @@ func GetEnv(key, fallback string) string {
 func MustGetEnv(key string) string {
 	value, ok := os.LookupEnv(key)
 	if !ok {
-		logger.Log.Fatal("environment variable is required but not set", zap.String("key", key))
+		logger.Log.Fatal("required environment variable is not set", zap.String("key", key))
 	}
 	return value
 }
@@ -71,7 +71,7 @@ func GetEnvAs[T Parsable](key string, fallback T) T {
 func MustGetEnvAs[T Parsable](key string) T {
 	value, ok := os.LookupEnv(key)
 	if !ok {
-		logger.Log.Fatal("environment variable is required but not set", zap.String("key", key))
+		logger.Log.Fatal("required environment variable is not set", zap.String("key", key))
 	}
 
 	var err error
@@ -93,7 +93,7 @@ func MustGetEnvAs[T Parsable](key string) T {
 	}
 
 	if err != nil {
-		logger.Log.Fatal("unable to convert environment variable", zap.String("key", key), zap.String("type", fmt.Sprintf("%T", target)))
+		logger.Log.Fatal("environment variable cannot be parsed", zap.String("key", key), zap.String("type", fmt.Sprintf("%T", target)))
 	}
 
 	return result.(T)
