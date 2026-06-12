@@ -3,21 +3,26 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
 )
 
 func main() {
+	logger.InitLogger()
+	defer logger.Sync()
+
 	if err := config.LoadEnv(); err != nil {
-		log.Fatal(err)
+		logger.Log.Fatal("failed to load env", zap.Error(err))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -28,7 +33,7 @@ func main() {
 	redisClient := redis.GetClient(cfg.Redis.Addr)
 	defer func() {
 		if err := redisClient.Close(); err != nil {
-			log.Printf("error closing Redis client: %v", err)
+			logger.Log.Error("error closing Redis client", zap.Error(err))
 		}
 	}()
 
@@ -41,7 +46,7 @@ func main() {
 	stream := redis.NewStream(redisClient, mq.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", cfg.Workers, smtpClient)
 
-	log.Println("Mailer started")
+	logger.Log.Info("Mailer started")
 	mlr.Start(ctx)
-	log.Println("Mailer stopped")
+	logger.Log.Info("Mailer stopped")
 }
