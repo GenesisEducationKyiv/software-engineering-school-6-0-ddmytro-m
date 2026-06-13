@@ -13,7 +13,7 @@ docker\:test:
 	docker compose run --rm test
 
 
-.PHONY: run run\:server run\:mailer build build\:server build\:mailer test test\:all test\:unit test\:integration lint lint\:fix
+.PHONY: run run\:server run\:mailer run\:notifier build build\:server build\:mailer build\:notifier test test\:all test\:unit test\:integration lint lint\:fix
 
 run: run\:server
 
@@ -23,13 +23,19 @@ run\:server:
 run\:mailer:
 	$(GO) run cmd/mailer/main.go
 
-build: build\:server build\:mailer
+run\:notifier:
+	$(GO) run cmd/notifier/main.go
+
+build: build\:server build\:mailer build\:notifier
 
 build\:server:
 	$(GO) build -o bin/server cmd/server/main.go
 
 build\:mailer:
 	$(GO) build -o bin/mailer cmd/mailer/main.go
+
+build\:notifier:
+	$(GO) build -o bin/notifier cmd/notifier/main.go
 
 test: test\:all
 
