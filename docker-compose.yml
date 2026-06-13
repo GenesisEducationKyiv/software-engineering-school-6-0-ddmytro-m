@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: server
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
@@ -15,6 +16,7 @@ services:
       - DB_NAME=github_scanner
       - DB_PORT=5432
       - REDIS_ADDR=redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
 
       - APP_ENV
       - LOG_LEVEL
@@ -34,6 +36,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   mailer:
     profiles:
@@ -42,8 +46,10 @@ services:
       context: .
       dockerfile: Dockerfile
       target: mailer
+    restart: unless-stopped
     environment:
       - REDIS_ADDR=redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
 
       - APP_ENV
       - MAILER_WORKERS
@@ -57,6 +63,43 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  notifier:
+    profiles:
+      - app
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: notifier
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+
+      - APP_ENV
+      - NOTIFIER_WORKERS
+      - NOTIFIER_PREFETCH_COUNT
+      - NOTIFIER_MAX_RETRY_ATTEMPTS
+      - NOTIFIER_RETRY_TTL_SECONDS
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   test:
     profiles:
@@ -159,6 +202,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:
   elasticsearch_data:
   grafana_data:
   prometheus_data:
