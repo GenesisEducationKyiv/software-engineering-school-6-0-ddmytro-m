@@ -25,10 +25,10 @@ func NewPublisher(conn *Connection) *Publisher {
 	return &Publisher{conn: conn}
 }
 
-// Publish serialises msg as JSON and publishes it to the exchange with the
-// given routing key. It waits for a publisher confirm and returns an error on
-// nack, timeout, or channel failure.
-func (p *Publisher) Publish(ctx context.Context, routingKey string, msg any) error {
+// Publish serialises msg as JSON and publishes it to the given exchange and
+// routing key. It waits for a publisher confirm and returns an error on nack,
+// timeout, or channel failure.
+func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, msg any) error {
 	ch, err := p.conn.Channel()
 	if err != nil {
 		return fmt.Errorf("rabbitmq publish: open channel: %w", err)
@@ -50,7 +50,7 @@ func (p *Publisher) Publish(ctx context.Context, routingKey string, msg any) err
 		return fmt.Errorf("rabbitmq publish: marshal: %w", err)
 	}
 
-	if err = ch.PublishWithContext(ctx, Exchange, routingKey, false, false, amqp.Publishing{
+	if err = ch.PublishWithContext(ctx, exchange, routingKey, false, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		Body:         body,

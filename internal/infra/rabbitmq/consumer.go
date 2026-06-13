@@ -17,21 +17,23 @@ import (
 // settle the delivery.
 type DeliveryHandler func(ctx context.Context, c *Consumer, d amqp.Delivery)
 
-// Consumer consumes messages from the notifications queue with manual acks.
+// Consumer consumes from a queue set with manual acks.
 type Consumer struct {
-	conn             *Connection
-	prefetch         int
-	maxRetryAttempts int
-	handler          DeliveryHandler
+	conn     *Connection
+	queues   QueueSet
+	prefetch int
+	retry    RetryPolicy
+	handler  DeliveryHandler
 }
 
-// NewConsumer creates a Consumer backed by the given Connection.
-func NewConsumer(conn *Connection, prefetch, maxRetryAttempts int, handler DeliveryHandler) *Consumer {
+// NewConsumer creates a Consumer for the given queue set.
+func NewConsumer(conn *Connection, queues QueueSet, prefetch int, retry RetryPolicy, handler DeliveryHandler) *Consumer {
 	return &Consumer{
-		conn:             conn,
-		prefetch:         prefetch,
-		maxRetryAttempts: maxRetryAttempts,
-		handler:          handler,
+		conn:     conn,
+		queues:   queues,
+		prefetch: prefetch,
+		retry:    retry,
+		handler:  handler,
 	}
 }
 
@@ -64,7 +66,7 @@ func (c *Consumer) consume(ctx context.Context) error {
 	}
 
 	deliveries, err := ch.Consume(
-		QueueNotifications,
+		c.queues.Main,
 		"",    // consumer tag (auto-generated)
 		false, // auto-ack
 		false, // exclusive
@@ -114,17 +116,18 @@ func attempts(d amqp.Delivery) int64 {
 	return 0
 }
 
-// Retry republishes the message to the retry wait queue with an incremented
-// x-attempts header, then acks the original. If the attempt count exceeds
-// maxRetryAttempts it calls DeadLetter instead.
-func (c *Consumer) Retry(ctx context.Context, conn *Connection, d amqp.Delivery, reason string) {
+// Retry republishes the message to the backoff tier matching its attempt count
+// with an incremented x-attempts header, then acks the original. Once attempts
+// exceed the configured tiers it calls DeadLetter instead.
+func (c *Consumer) Retry(ctx context.Context, d amqp.Delivery, reason string) {
 	att := attempts(d) + 1
-	if att > int64(c.maxRetryAttempts) {
-		c.DeadLetter(ctx, conn, d, fmt.Sprintf("max retry attempts exceeded: %s", reason))
+	if att > int64(c.retry.Tiers) {
+		c.DeadLetter(ctx, d, fmt.Sprintf("max retry attempts exceeded: %s", reason))
 		return
 	}
+	tierQueue := retryQueueName(c.queues.Retry, int(att-1))
 
-	ch, err := conn.Channel()
+	ch, err := c.conn.Channel()
 	if err != nil {
 		logger.Log.Error("rabbitmq consumer: retry: open channel failed", zap.Error(err))
 		return
@@ -139,7 +142,7 @@ func (c *Consumer) Retry(ctx context.Context, conn *Connection, d amqp.Delivery,
 	maps.Copy(headers, d.Headers)
 	headers[HeaderAttempts] = att
 
-	if pubErr := ch.PublishWithContext(ctx, "", QueueRetry, false, false, amqp.Publishing{
+	if pubErr := ch.PublishWithContext(ctx, "", tierQueue, false, false, amqp.Publishing{
 		ContentType:   d.ContentType,
 		DeliveryMode:  amqp.Persistent,
 		Body:          d.Body,
@@ -156,15 +159,15 @@ func (c *Consumer) Retry(ctx context.Context, conn *Connection, d amqp.Delivery,
 
 	logger.Log.Warn("rabbitmq consumer: message retried",
 		zap.Int64("attempt", att),
-		zap.Int("max", c.maxRetryAttempts),
+		zap.Int("max", c.retry.Tiers),
 		zap.String("reason", reason),
 	)
 }
 
 // DeadLetter publishes the message to the DLQ with reason metadata, then acks
 // the original.
-func (c *Consumer) DeadLetter(ctx context.Context, conn *Connection, d amqp.Delivery, reason string) {
-	ch, err := conn.Channel()
+func (c *Consumer) DeadLetter(ctx context.Context, d amqp.Delivery, reason string) {
+	ch, err := c.conn.Channel()
 	if err != nil {
 		logger.Log.Error("rabbitmq consumer: dead-letter: open channel failed", zap.Error(err))
 		return
@@ -177,9 +180,9 @@ func (c *Consumer) DeadLetter(ctx context.Context, conn *Connection, d amqp.Deli
 
 	headers := amqp.Table{}
 	maps.Copy(headers, d.Headers)
-	headers["x-dlq-reason"] = reason
+	headers[HeaderDLQReason] = reason
 
-	if pubErr := ch.PublishWithContext(ctx, "", QueueDLQ, false, false, amqp.Publishing{
+	if pubErr := ch.PublishWithContext(ctx, "", c.queues.DLQ, false, false, amqp.Publishing{
 		ContentType:  d.ContentType,
 		DeliveryMode: amqp.Persistent,
 		Body:         d.Body,

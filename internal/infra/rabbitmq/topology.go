@@ -1,5 +1,5 @@
-// Package rabbitmq provides RabbitMQ connection management, topology declaration,
-// publishing, and consuming for the github-scanner event broker.
+// Package rabbitmq provides connection, topology, publishing, and consuming
+// for the github-scanner broker.
 package rabbitmq
 
 import (
@@ -9,98 +9,111 @@ import (
 )
 
 const (
-	// Exchange is the durable topic exchange for domain events.
-	Exchange = "github_scanner.events"
+	// EventsExchange is the topic exchange for domain events.
+	EventsExchange = "github_scanner.events"
+	// CommandsExchange is the topic exchange for delivery commands.
+	CommandsExchange = "github_scanner.commands"
 
-	// QueueNotifications is the primary consumer queue.
-	QueueNotifications = "notifications"
-
-	// QueueRetry is the wait queue used for retrying failed messages.
-	QueueRetry = "notifications.retry"
-
-	// QueueDLQ is the dead-letter queue for exhausted / poison messages.
-	QueueDLQ = "notifications.dlq"
-
-	// RoutingKeyReleaseDetected is published when a new release is found.
+	// RoutingKeyReleaseDetected routes a new-release event.
 	RoutingKeyReleaseDetected = "release.detected"
-
-	// RoutingKeyRepositoryMoved is published when a repository ID mismatch is detected.
+	// RoutingKeyRepositoryMoved routes a repository-moved event.
 	RoutingKeyRepositoryMoved = "repository.moved"
-
-	// RoutingKeySubscriptionCreated is published when a subscription is created.
+	// RoutingKeySubscriptionCreated routes a subscription-created event.
 	RoutingKeySubscriptionCreated = "subscription.created"
+	// RoutingKeyEmailSend routes an email-send command.
+	RoutingKeyEmailSend = "email.send"
 
-	// HeaderAttempts is the header used to track the retry attempt count.
+	// HeaderAttempts tracks the retry attempt count.
 	HeaderAttempts = "x-attempts"
+	// HeaderDLQReason records why a message was dead-lettered.
+	HeaderDLQReason = "x-dlq-reason"
 )
 
-// declareTopology idempotently creates the exchange, queues, and bindings
-// required by the notification pipeline. It is called after each reconnect.
-func declareTopology(ch *amqp.Channel, retryTTLMs int64) error {
-	// Durable topic exchange
-	if err := ch.ExchangeDeclare(
-		Exchange,
-		"topic",
-		true,  // durable
-		false, // auto-delete
-		false, // internal
-		false, // no-wait
-		nil,
-	); err != nil {
-		return fmt.Errorf("declare exchange: %w", err)
-	}
+// QueueSet is the main/retry/dlq trio backing one reliable consumer.
+type QueueSet struct {
+	Main  string
+	Retry string
+	DLQ   string
+}
 
-	// Main notifications queue
-	if _, err := ch.QueueDeclare(
-		QueueNotifications,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		nil,
-	); err != nil {
-		return fmt.Errorf("declare %s queue: %w", QueueNotifications, err)
-	}
+// Endpoint binds a queue set to an exchange via routing keys.
+type Endpoint struct {
+	Exchange    string
+	RoutingKeys []string
+	Queues      QueueSet
+}
 
-	// Bind the main queue to the exchange for all three routing keys
-	for _, rk := range []string{
+// NotificationsEndpoint is consumed by the notifier service.
+var NotificationsEndpoint = Endpoint{
+	Exchange: EventsExchange,
+	RoutingKeys: []string{
 		RoutingKeyReleaseDetected,
 		RoutingKeyRepositoryMoved,
 		RoutingKeySubscriptionCreated,
-	} {
-		if err := ch.QueueBind(QueueNotifications, rk, Exchange, false, nil); err != nil {
-			return fmt.Errorf("bind %s to %s: %w", rk, QueueNotifications, err)
+	},
+	Queues: QueueSet{
+		Main:  "notifications",
+		Retry: "notifications.retry",
+		DLQ:   "notifications.dlq",
+	},
+}
+
+// CommandsEndpoint is consumed by the mailer service.
+var CommandsEndpoint = Endpoint{
+	Exchange:    CommandsExchange,
+	RoutingKeys: []string{RoutingKeyEmailSend},
+	Queues: QueueSet{
+		Main:  "email.delivery",
+		Retry: "email.delivery.retry",
+		DLQ:   "email.delivery.dlq",
+	},
+}
+
+var exchanges = []string{EventsExchange, CommandsExchange}
+
+var endpoints = []Endpoint{NotificationsEndpoint, CommandsEndpoint}
+
+func declareTopology(ch *amqp.Channel, retry RetryPolicy) error {
+	for _, ex := range exchanges {
+		if err := ch.ExchangeDeclare(ex, "topic", true, false, false, false, nil); err != nil {
+			return fmt.Errorf("declare exchange %s: %w", ex, err)
+		}
+	}
+	for _, ep := range endpoints {
+		if err := declareEndpoint(ch, ep, retry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func declareEndpoint(ch *amqp.Channel, ep Endpoint, retry RetryPolicy) error {
+	if _, err := ch.QueueDeclare(ep.Queues.Main, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare %s queue: %w", ep.Queues.Main, err)
+	}
+	for _, rk := range ep.RoutingKeys {
+		if err := ch.QueueBind(ep.Queues.Main, rk, ep.Exchange, false, nil); err != nil {
+			return fmt.Errorf("bind %s to %s: %w", rk, ep.Queues.Main, err)
 		}
 	}
 
-	// Retry wait queue: messages expire after retryTTLMs and are dead-lettered
-	// back to the main exchange (same routing key is preserved).
-	retryArgs := amqp.Table{
-		"x-dead-letter-exchange": Exchange,
-		"x-message-ttl":          retryTTLMs,
-	}
-	if _, err := ch.QueueDeclare(
-		QueueRetry,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		retryArgs,
-	); err != nil {
-		return fmt.Errorf("declare %s queue: %w", QueueRetry, err)
+	// One wait queue per backoff tier: each holds messages for an exponentially
+	// larger delay, then dead-letters them back to the main queue via the
+	// default exchange (consumers dispatch on the body, not the routing key).
+	for tier := range retry.Tiers {
+		args := amqp.Table{
+			"x-dead-letter-exchange":    "",
+			"x-dead-letter-routing-key": ep.Queues.Main,
+			"x-message-ttl":             retry.tierTTLms(tier),
+		}
+		name := retryQueueName(ep.Queues.Retry, tier)
+		if _, err := ch.QueueDeclare(name, true, false, false, false, args); err != nil {
+			return fmt.Errorf("declare %s queue: %w", name, err)
+		}
 	}
 
-	// DLQ: final resting place for poison / exhausted messages
-	if _, err := ch.QueueDeclare(
-		QueueDLQ,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false, // no-wait
-		nil,
-	); err != nil {
-		return fmt.Errorf("declare %s queue: %w", QueueDLQ, err)
+	if _, err := ch.QueueDeclare(ep.Queues.DLQ, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare %s queue: %w", ep.Queues.DLQ, err)
 	}
-
 	return nil
 }

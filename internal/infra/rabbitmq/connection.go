@@ -22,17 +22,17 @@ const (
 // It exposes Channel() to obtain a fresh channel after each reconnect, and
 // re-declares the topology on every successful connection.
 type Connection struct {
-	url        string
-	retryTTLMs int64
-	mu         sync.RWMutex
-	conn       *amqp.Connection
+	url   string
+	retry RetryPolicy
+	mu    sync.RWMutex
+	conn  *amqp.Connection
 }
 
 // Dial opens the initial connection with blocking retry and returns a Connection.
-func Dial(url string, retryTTLSeconds int) (*Connection, error) {
+func Dial(url string, retry RetryPolicy) (*Connection, error) {
 	c := &Connection{
-		url:        url,
-		retryTTLMs: int64(retryTTLSeconds) * 1000,
+		url:   url,
+		retry: retry,
 	}
 
 	c.connect()
@@ -56,7 +56,7 @@ func (c *Connection) connect() {
 				backoff = min(backoff*backoffFactor, maxBackoff)
 				continue
 			}
-			declErr := declareTopology(ch, c.retryTTLMs)
+			declErr := declareTopology(ch, c.retry)
 			_ = ch.Close()
 			if declErr != nil {
 				_ = conn.Close()
