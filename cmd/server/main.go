@@ -14,7 +14,8 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/eventpublisher"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 
@@ -67,14 +68,27 @@ func main() {
 		github.WithHTTPClient(httpClient),
 	)
 
-	stream := redis.NewStream(redisClient, mq.DeliveryStream)
-	deliveryPublisher := mq.NewDeliveryPublisher(stream)
-	emailMQ := mq.NewEmailMQ(deliveryPublisher)
+	retryPolicy := rabbitmq.NewRetryPolicy(
+		time.Duration(cfg.RabbitMQ.RetryTTLSeconds)*time.Second,
+		cfg.RabbitMQ.RetryBackoffFactor,
+		cfg.RabbitMQ.MaxRetryAttempts,
+	)
+	rmqConn, err := rabbitmq.Dial(cfg.RabbitMQ.URL, retryPolicy)
+	if err != nil {
+		logger.Log.Fatal("failed to connect to RabbitMQ", zap.Error(err))
+	}
+	defer func() {
+		if closeErr := rmqConn.Close(); closeErr != nil {
+			logger.Log.Error("error closing RabbitMQ connection", zap.Error(closeErr))
+		}
+	}()
 
-	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
+	eventPub := eventpublisher.New(rabbitmq.NewPublisher(rmqConn))
+
+	scn := scanner.NewScanner(orm, ghClient, eventPub, rateLimitTransport, &cfg.Scanner)
 
 	subStore := handlers.NewSubscriptionStore(orm)
-	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, emailMQ)
+	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, eventPub)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
 	go scn.Start(ctx)
