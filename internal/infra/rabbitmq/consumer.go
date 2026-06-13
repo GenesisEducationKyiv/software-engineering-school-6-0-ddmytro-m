@@ -12,10 +12,27 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
-// DeliveryHandler is the callback invoked for each message received from the queue.
-// Implementations must call one of Ack, Retry, or DeadLetter on the Consumer to
-// settle the delivery.
-type DeliveryHandler func(ctx context.Context, c *Consumer, d amqp.Delivery)
+// Settler settles a single delivery: exactly one of these must be called.
+type Settler interface {
+	Ack()
+	Retry(ctx context.Context, reason string)
+	DeadLetter(ctx context.Context, reason string)
+}
+
+// DeliveryHandler is invoked for each message; it must settle via s.
+type DeliveryHandler func(ctx context.Context, body []byte, s Settler)
+
+// settler binds a delivery to its consumer to satisfy Settler.
+type settler struct {
+	c *Consumer
+	d amqp.Delivery
+}
+
+func (s settler) Ack()                                { s.c.Ack(s.d) }
+func (s settler) Retry(ctx context.Context, r string) { s.c.Retry(ctx, s.d, r) }
+func (s settler) DeadLetter(ctx context.Context, r string) {
+	s.c.DeadLetter(ctx, s.d, r)
+}
 
 // Consumer consumes from a queue set with manual acks.
 type Consumer struct {
@@ -88,7 +105,7 @@ func (c *Consumer) consume(ctx context.Context) error {
 			if !ok {
 				return fmt.Errorf("deliveries channel closed")
 			}
-			c.handler(ctx, c, d)
+			c.handler(ctx, d.Body, settler{c: c, d: d})
 		}
 	}
 }
