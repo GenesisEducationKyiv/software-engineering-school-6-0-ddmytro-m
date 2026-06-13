@@ -39,9 +39,9 @@ func main() {
 	}()
 
 	retryPolicy := rabbitmq.NewRetryPolicy(
-		time.Duration(cfg.RetryTTLSeconds)*time.Second,
-		cfg.RetryBackoffFactor,
-		cfg.MaxRetryAttempts,
+		time.Duration(cfg.RabbitMQ.RetryTTLSeconds)*time.Second,
+		cfg.RabbitMQ.RetryBackoffFactor,
+		cfg.RabbitMQ.MaxRetryAttempts,
 	)
 
 	conn, err := rabbitmq.Dial(cfg.RabbitMQ.URL, retryPolicy)
@@ -67,12 +67,10 @@ func main() {
 	)
 
 	var wg sync.WaitGroup
-	for i := 0; i < cfg.Workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range cfg.Workers {
+		wg.Go(func() {
 			consumer.Start(ctx)
-		}()
+		})
 	}
 
 	logger.Log.Info("Notifier started", zap.Int("workers", cfg.Workers))
