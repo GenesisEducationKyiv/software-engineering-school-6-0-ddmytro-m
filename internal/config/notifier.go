@@ -12,6 +12,7 @@ type NotifierConfig struct {
 	MaxRetryAttempts   int
 	RetryTTLSeconds    int
 	RetryBackoffFactor int
+	DedupTTLHours      int
 }
 
 // LoadNotifierConfig reads all env vars required by the notifier service.
@@ -25,5 +26,6 @@ func LoadNotifierConfig() NotifierConfig {
 		MaxRetryAttempts:   utils.GetEnvAs("NOTIFIER_MAX_RETRY_ATTEMPTS", 5),
 		RetryTTLSeconds:    utils.GetEnvAs("NOTIFIER_RETRY_TTL_SECONDS", 30),
 		RetryBackoffFactor: utils.GetEnvAs("NOTIFIER_RETRY_BACKOFF_FACTOR", 2),
+		DedupTTLHours:      utils.GetEnvAs("NOTIFIER_DEDUP_TTL_HOURS", 24),
 	}
 }
