@@ -28,6 +28,6 @@ func Prometheus() gin.HandlerFunc {
 		elapsed := time.Since(start).Seconds()
 
 		metrics.HTTPRequestsTotal.WithLabelValues(c.Request.Method, path, status).Inc()
-		metrics.HTTPRequestDuration.WithLabelValues(c.Request.Method, path).Observe(elapsed)
+		metrics.HTTPRequestDuration.WithLabelValues(c.Request.Method, path, status).Observe(elapsed)
 	}
 }

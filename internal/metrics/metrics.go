@@ -25,7 +25,7 @@ var (
 			Help:    "HTTP request latency in seconds.",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"method", "path"},
+		[]string{"method", "path", "status"},
 	)
 
 	// HTTPRequestsInFlight tracks the current number of HTTP requests being processed.

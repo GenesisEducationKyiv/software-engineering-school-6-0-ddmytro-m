@@ -3,12 +3,13 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
@@ -16,6 +17,7 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 
 	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/handlers"
@@ -27,7 +29,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	logger.InitLogger()
+	defer logger.Sync()
+
 	cfg := config.Get()
+
+	logger.Log.Info("configuration loaded", zap.String("environment", cfg.AppEnv))
 
 	orm := db.Get()
 	defer db.Close()
@@ -36,7 +43,7 @@ func main() {
 	defer func() {
 		err := redisClient.Close()
 		if err != nil {
-			log.Printf("error closing Redis client: %v", err)
+			logger.Log.Error("error closing Redis client", zap.Error(err))
 		}
 	}()
 
@@ -74,19 +81,19 @@ func main() {
 	go mlr.Start(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
-			log.Printf("HTTP server error: %v", err)
+			logger.Log.Error("HTTP server error", zap.Error(err))
 		}
 	}()
 
-	log.Println("Scanner, Mailer, and HTTP Server are running...")
+	logger.Log.Info("Scanner, Mailer, and HTTP Server are running...")
 	<-ctx.Done()
 
-	log.Println("shutting down...")
+	logger.Log.Info("shutting down...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Stop(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		logger.Log.Error("HTTP server shutdown error", zap.Error(err))
 	}
 
 	time.Sleep(1 * time.Second)

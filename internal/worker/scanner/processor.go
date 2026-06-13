@@ -2,10 +2,12 @@ package scanner
 
 import (
 	"context"
-	"log"
+
+	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // RepoProcessor defines the contract for processing a single repository.
@@ -33,7 +35,7 @@ func NewRepoProcessor(store RepositoryStore, gh *github.Client, notifier Notifie
 func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Repository) {
 	defer func() {
 		if err := p.store.UpdateScanStatus(repo); err != nil {
-			log.Printf("error updating scan status for %s/%s: %v", repo.Owner, repo.Name, err)
+			logger.Log.Error("error updating scan status", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}()
 
@@ -42,7 +44,7 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 	switch repoResp.StatusCode {
 	case 200:
 		if repoResp.Data.ID != repo.GitHubID {
-			log.Printf("repo ID mismatch for %s/%s: stored %d, got %d — skipping", repo.Owner, repo.Name, repo.GitHubID, repoResp.Data.ID)
+			logger.Log.Warn("repo ID mismatch — skipping", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Int64("stored_id", repo.GitHubID), zap.Int64("got_id", repoResp.Data.ID))
 			p.handleRepoMoved(repo)
 			return
 		}
@@ -52,17 +54,17 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 		// identity confirmed via ETag, proceed
 
 	case 404:
-		log.Printf("repo %s/%s no longer exists — skipping", repo.Owner, repo.Name)
+		logger.Log.Warn("repo no longer exists — skipping", zap.String("owner", repo.Owner), zap.String("name", repo.Name))
 		return
 
 	case 403, 429:
 		p.quota.Freeze()
-		log.Printf("critical limit hit on repo check (%d). limiter frozen.", repoResp.StatusCode)
+		logger.Log.Error("critical limit hit on repo check, limiter frozen", zap.Int("status", repoResp.StatusCode))
 		return
 
 	default:
 		if repoResp.Error != nil {
-			log.Printf("error checking repo %s/%s: %v", repo.Owner, repo.Name, repoResp.Error)
+			logger.Log.Error("error checking repo", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(repoResp.Error))
 		}
 		return
 	}
@@ -72,7 +74,7 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 	switch releaseResp.StatusCode {
 	case 200:
 		if releaseResp.Data.TagName != repo.LastRelease.TagName {
-			log.Printf("new release for %s/%s: %s", repo.Owner, repo.Name, releaseResp.Data.TagName)
+			logger.Log.Info("new release detected", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.String("tag", releaseResp.Data.TagName))
 			p.handleNewRelease(repo, &releaseResp.Data)
 			repo.LastRelease.TagName = releaseResp.Data.TagName
 			repo.LastRelease.GitHubID = releaseResp.Data.ID
@@ -87,11 +89,11 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 
 	case 403, 429:
 		p.quota.Freeze()
-		log.Printf("critical limit hit (%d). limiter frozen.", releaseResp.StatusCode)
+		logger.Log.Error("critical limit hit on release check, limiter frozen", zap.Int("status", releaseResp.StatusCode))
 
 	default:
 		if releaseResp.Error != nil {
-			log.Printf("error while getting latest release: %s", releaseResp.Error.Error())
+			logger.Log.Error("error while getting latest release", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(releaseResp.Error))
 		}
 	}
 }
@@ -99,13 +101,13 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 func (p *domainRepoProcessor) handleNewRelease(repo *db.Repository, latestRelease *github.LatestRelease) {
 	subs, err := p.store.GetActiveSubscriptions(repo.ID)
 	if err != nil {
-		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("error finding active subscriptions", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		return
 	}
 
 	for _, sub := range subs {
 		if err := p.notifier.SendNewRelease(&sub, repo, latestRelease); err != nil {
-			log.Printf("failed to notify %s for %s/%s: %v", sub.Email, repo.Owner, repo.Name, err)
+			logger.Log.Error("failed to notify subscriber", zap.String("email", sub.Email), zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}
 }
@@ -113,17 +115,17 @@ func (p *domainRepoProcessor) handleNewRelease(repo *db.Repository, latestReleas
 func (p *domainRepoProcessor) handleRepoMoved(repo *db.Repository) {
 	subs, err := p.store.GetActiveSubscriptions(repo.ID)
 	if err != nil {
-		log.Printf("error finding active subscriptions for %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("error finding active subscriptions", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		return
 	}
 
 	for _, sub := range subs {
 		if err := p.notifier.SendRepoMoved(&sub, repo); err != nil {
-			log.Printf("failed to notify %s for %s/%s: %v", sub.Email, repo.Owner, repo.Name, err)
+			logger.Log.Error("failed to notify subscriber", zap.String("email", sub.Email), zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}
 
 	if err := p.store.MarkMovedAndUnsubscribe(repo); err != nil {
-		log.Printf("failed to handle db updates for moved repo %s/%s: %v", repo.Owner, repo.Name, err)
+		logger.Log.Error("failed to handle db updates for moved repo", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 	}
 }

@@ -2,11 +2,13 @@ package scanner
 
 import (
 	"context"
-	"log"
 	"math"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // RepoProducer defines the contract for producing repositories to scan.
@@ -46,15 +48,15 @@ func (p *domainRepoProducer) Produce(ctx context.Context, out chan<- db.Reposito
 
 	repos, err := p.store.ClaimIdle(batchSize, p.minCheckInterval)
 	if err != nil {
-		log.Printf("producer db error: %v", err)
+		logger.Log.Error("producer db error", zap.Error(err))
 		return
 	}
 	if len(repos) == 0 {
-		log.Print("no repositories to scan")
+		logger.Log.Info("no repositories to scan")
 		return
 	}
 
-	log.Printf("found %d repositories to scan", len(repos))
+	logger.Log.Info("found repositories to scan", zap.Int("count", len(repos)))
 
 	for _, r := range repos {
 		select {

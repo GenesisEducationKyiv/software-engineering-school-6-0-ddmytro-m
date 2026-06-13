@@ -2,13 +2,14 @@ package scanner
 
 import (
 	"context"
-	"log"
 	"math"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // RateLimitProvider gives a method to get current rate limits regardless of internal implementation.
@@ -54,10 +55,10 @@ func (q *dynamicQuotaManager) Refresh() float64 {
 	}
 	now := time.Now()
 
-	log.Print("checking rate limits...")
+	logger.Log.Debug("checking rate limits...")
 
 	if now.Before(limits.RetryAfter) {
-		log.Print("secondary rate limits hit, hibernating...")
+		logger.Log.Warn("secondary rate limits hit, hibernating...")
 		q.limiter.SetLimit(0)
 		return 0
 	}
@@ -77,7 +78,7 @@ func (q *dynamicQuotaManager) Refresh() float64 {
 	var rps float64
 	if usable <= 0 {
 		rps = 0
-		log.Printf("primary rate limit low (%d/%d). hibernating...", limits.Remaining, limits.Limit)
+		logger.Log.Warn("primary rate limit low, hibernating...", zap.Int64("remaining", limits.Remaining), zap.Int64("limit", limits.Limit))
 	} else {
 		rps = usable / timeUntilReset
 		// don't exceed 10 RPS to avoid GitHub Secondary Limits

@@ -2,14 +2,16 @@
 package db
 
 import (
-	"log"
 	"sync"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
+	"go.uber.org/zap"
+
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
 // Release represents the latest release information for a repository.
@@ -80,12 +82,12 @@ func Get() *gorm.DB {
 		dsn := config.Get().DBDSN
 		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 		if err != nil {
-			panic("failed to connect to database: " + err.Error())
+			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
 
 		err = db.AutoMigrate(&Repository{}, &Subscription{})
 		if err != nil {
-			panic("failed to migrate database: " + err.Error())
+			logger.Log.Fatal("failed to migrate database", zap.Error(err))
 		}
 
 		instance = db
@@ -99,14 +101,14 @@ func Close() {
 	if instance != nil {
 		sqlDB, err := instance.DB()
 		if err != nil {
-			log.Printf("error getting underlying sql.DB: %v", err)
+			logger.Log.Error("error getting underlying sql.DB", zap.Error(err))
 			return
 		}
 
 		if err := sqlDB.Close(); err != nil {
-			log.Printf("error closing database: %v", err)
+			logger.Log.Error("error closing database", zap.Error(err))
 		} else {
-			log.Println("database connection closed.")
+			logger.Log.Info("database connection closed")
 		}
 	}
 }
