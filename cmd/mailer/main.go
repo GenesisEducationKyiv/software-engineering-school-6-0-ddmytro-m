@@ -5,13 +5,14 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
@@ -30,23 +31,47 @@ func main() {
 
 	cfg := config.LoadMailerConfig()
 
-	redisClient := redis.GetClient(cfg.Redis.Addr)
-	defer func() {
-		if err := redisClient.Close(); err != nil {
-			logger.Log.Error("error closing Redis client", zap.Error(err))
-		}
-	}()
-
 	smtpClient := smtp.NewClient(
 		cfg.SMTP.Host, cfg.SMTP.Port,
 		cfg.SMTP.Username, cfg.SMTP.Password,
 		cfg.SMTP.From, cfg.SMTP.SenderEmail,
 	)
 
-	stream := redis.NewStream(redisClient, mq.DeliveryStream)
-	mlr := mailer.NewMailer(stream, "mailer_group", cfg.Workers, smtpClient)
+	retryPolicy := rabbitmq.NewRetryPolicy(
+		time.Duration(cfg.RabbitMQ.RetryTTLSeconds)*time.Second,
+		cfg.RabbitMQ.RetryBackoffFactor,
+		cfg.RabbitMQ.MaxRetryAttempts,
+	)
 
-	logger.Log.Info("Mailer started")
-	mlr.Start(ctx)
+	conn, err := rabbitmq.Dial(cfg.RabbitMQ.URL, retryPolicy)
+	if err != nil {
+		logger.Log.Fatal("failed to connect to RabbitMQ", zap.Error(err))
+	}
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.Log.Error("error closing RabbitMQ connection", zap.Error(closeErr))
+		}
+	}()
+
+	mlr := mailer.New(smtpClient)
+	consumer := rabbitmq.NewConsumer(
+		conn,
+		rabbitmq.CommandsEndpoint.Queues,
+		cfg.PrefetchCount,
+		retryPolicy,
+		mlr.Handler(),
+	)
+
+	var wg sync.WaitGroup
+	for range cfg.Workers {
+		wg.Go(func() {
+			consumer.Start(ctx)
+		})
+	}
+
+	logger.Log.Info("Mailer started", zap.Int("workers", cfg.Workers))
+	<-ctx.Done()
+	logger.Log.Info("Mailer shutting down, waiting for workers...")
+	wg.Wait()
 	logger.Log.Info("Mailer stopped")
 }

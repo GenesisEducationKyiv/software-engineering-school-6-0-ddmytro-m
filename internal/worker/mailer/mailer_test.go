@@ -6,9 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
+	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -16,204 +16,172 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
 func init() {
 	logger.Log = zap.NewNop()
 }
 
-type mockStream struct {
-	acked       []string
-	deadLetters []any
-	errDL       error
+type sentEmail struct {
+	to, subject, body string
 }
 
-func (m *mockStream) Ack(ctx context.Context, group string, ids ...string) error {
-	m.acked = append(m.acked, ids...)
-	return nil
+type fakeSender struct {
+	mu       sync.Mutex
+	sent     []sentEmail
+	failures int // fail this many initial calls, then succeed
 }
 
-func (m *mockStream) AutoClaim(ctx context.Context, group, consumer string, minIdle time.Duration, start string, count int64) (msgs []Message, next string, err error) {
-	return nil, "", nil
-}
-
-func (m *mockStream) EnsureConsumerGroup(ctx context.Context, group string) error {
-	return nil
-}
-
-func (m *mockStream) PublishDeadLetter(ctx context.Context, msg any) error {
-	if m.errDL != nil {
-		return m.errDL
+func (f *fakeSender) SendEmail(_ context.Context, to, subject, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, sentEmail{to, subject, body})
+	if len(f.sent) <= f.failures {
+		return errors.New("smtp boom")
 	}
-	m.deadLetters = append(m.deadLetters, msg)
 	return nil
 }
 
-func (m *mockStream) ReadGroup(ctx context.Context, group, consumer string, count int64, block time.Duration) ([]Message, error) {
-	return nil, nil
+func (f *fakeSender) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sent)
 }
 
-type mockMessage struct {
-	id      string
-	payload []byte
+type fakeSettler struct {
+	acked        bool
+	retried      string
+	deadLettered string
 }
 
-func (m mockMessage) ID() string      { return m.id }
-func (m mockMessage) Payload() []byte { return m.payload }
+func (s *fakeSettler) Ack()                                   { s.acked = true }
+func (s *fakeSettler) Retry(_ context.Context, r string)      { s.retried = r }
+func (s *fakeSettler) DeadLetter(_ context.Context, r string) { s.deadLettered = r }
 
-func TestBuildEmail(t *testing.T) {
-	m := &Mailer[mockMessage]{}
+func newMailer(sender EmailSender) *Mailer {
+	m := New(sender)
+	m.baseBackoff = 0 // no waiting between retries in tests
+	return m
+}
 
-	tests := []struct {
+func TestProcess_KnownEvents_SendAndAck(t *testing.T) {
+	cases := []struct {
 		name        string
-		msg         mq.DeliveryMessage
+		cmd         mq.DeliveryMessage
+		wantInBody  string
 		wantSubject string
-		wantBody    string
-		wantKnown   bool
 	}{
 		{
-			name: "NewRelease",
-			msg: mq.DeliveryMessage{
-				Event:   mq.EventNewRelease,
-				Repo:    "owner/repo",
-				Release: "v1.0.0",
-			},
-			wantSubject: "New release for owner/repo: v1.0.0",
-			wantBody:    "A new release v1.0.0 is available for owner/repo.",
-			wantKnown:   true,
+			name:        "new release",
+			cmd:         mq.DeliveryMessage{Event: mq.EventNewRelease, Email: "u@example.com", Repo: "owner/repo", Release: "v1.2.3"},
+			wantInBody:  "v1.2.3",
+			wantSubject: "New release for owner/repo: v1.2.3",
 		},
 		{
-			name: "RepoMoved",
-			msg: mq.DeliveryMessage{
-				Event: mq.EventRepoMoved,
-				Repo:  "owner/repo",
-			},
+			name:        "repo moved",
+			cmd:         mq.DeliveryMessage{Event: mq.EventRepoMoved, Email: "u@example.com", Repo: "owner/repo"},
+			wantInBody:  "moved or renamed",
 			wantSubject: "Repository moved: owner/repo",
-			wantBody:    "The repository owner/repo has been moved or renamed.",
-			wantKnown:   true,
 		},
 		{
-			name: "EmailVerification",
-			msg: mq.DeliveryMessage{
-				Event: mq.EventEmailVerification,
-				Payload: map[string]any{
-					"token": "secret-token",
-				},
-			},
+			name:        "email verification",
+			cmd:         mq.DeliveryMessage{Event: mq.EventEmailVerification, Email: "u@example.com", Payload: map[string]any{"token": "tok123"}},
+			wantInBody:  "tok123",
 			wantSubject: "Verify your email",
-			wantBody:    "Your verification token is secret-token",
-			wantKnown:   true,
-		},
-		{
-			name: "UnknownEvent",
-			msg: mq.DeliveryMessage{
-				Event: "unknown_event_type",
-			},
-			wantSubject: "",
-			wantBody:    "",
-			wantKnown:   false,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			subject, body, known := m.buildEmail(tt.msg)
-			if subject != tt.wantSubject {
-				t.Errorf("subject = %q, want %q", subject, tt.wantSubject)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sender := &fakeSender{}
+			m := newMailer(sender)
+			s := &fakeSettler{}
+
+			m.process(context.Background(), mustJSON(t, tc.cmd), s)
+
+			if !s.acked {
+				t.Fatalf("expected ack, got retry=%q deadLetter=%q", s.retried, s.deadLettered)
 			}
-			if body != tt.wantBody {
-				t.Errorf("body = %q, want %q", body, tt.wantBody)
+			if sender.count() != 1 {
+				t.Fatalf("expected 1 send, got %d", sender.count())
 			}
-			if known != tt.wantKnown {
-				t.Errorf("known = %v, want %v", known, tt.wantKnown)
+			got := sender.sent[0]
+			if got.to != tc.cmd.Email {
+				t.Errorf("recipient = %q, want %q", got.to, tc.cmd.Email)
+			}
+			if got.subject != tc.wantSubject {
+				t.Errorf("subject = %q, want %q", got.subject, tc.wantSubject)
+			}
+			if !strings.Contains(got.body, tc.wantInBody) {
+				t.Errorf("body %q missing %q", got.body, tc.wantInBody)
 			}
 		})
 	}
 }
 
-func TestProcessMessage_EmptyPayload(t *testing.T) {
-	stream := &mockStream{}
-	mailer := NewMailer(stream, "test_group", 1, nil)
-	msg := mockMessage{id: "1-0", payload: []byte{}}
+func TestProcess_UnknownEvent_DeadLetters(t *testing.T) {
+	sender := &fakeSender{}
+	m := newMailer(sender)
+	s := &fakeSettler{}
 
-	mailer.processMessage(context.Background(), 1, msg)
+	m.process(context.Background(), mustJSON(t, mq.DeliveryMessage{Event: "bogus", Email: "u@example.com"}), s)
 
-	if len(stream.deadLetters) != 1 {
-		t.Fatalf("expected 1 dead letter, got %d", len(stream.deadLetters))
+	if s.deadLettered == "" {
+		t.Fatalf("expected dead-letter, got ack=%v retry=%q", s.acked, s.retried)
 	}
-	if len(stream.acked) != 1 || stream.acked[0] != "1-0" {
-		t.Errorf("expected msg to be acked, got %v", stream.acked)
-	}
-}
-
-func TestProcessMessage_MalformedJSON(t *testing.T) {
-	stream := &mockStream{}
-	mailer := NewMailer(stream, "test_group", 1, nil)
-	msg := mockMessage{id: "1-0", payload: []byte("invalid json")}
-
-	mailer.processMessage(context.Background(), 1, msg)
-
-	if len(stream.deadLetters) != 1 {
-		t.Fatalf("expected 1 dead letter, got %d", len(stream.deadLetters))
-	}
-	if len(stream.acked) != 1 || stream.acked[0] != "1-0" {
-		t.Errorf("expected msg to be acked, got %v", stream.acked)
+	if sender.count() != 0 {
+		t.Errorf("expected no send for unknown event, got %d", sender.count())
 	}
 }
 
-func TestProcessMessage_UnknownEvent(t *testing.T) {
-	stream := &mockStream{}
-	mailer := NewMailer(stream, "test_group", 1, nil)
+func TestProcess_MalformedJSON_DeadLetters(t *testing.T) {
+	sender := &fakeSender{}
+	m := newMailer(sender)
+	s := &fakeSettler{}
 
-	validJSON, _ := json.Marshal(mq.DeliveryMessage{Event: "unknown_event_type"})
-	msg := mockMessage{id: "1-0", payload: validJSON}
+	m.process(context.Background(), []byte("{not json"), s)
 
-	mailer.processMessage(context.Background(), 1, msg)
-
-	if len(stream.deadLetters) != 1 {
-		t.Fatalf("expected 1 dead letter, got %d", len(stream.deadLetters))
+	if s.deadLettered == "" {
+		t.Fatalf("expected dead-letter, got ack=%v retry=%q", s.acked, s.retried)
 	}
-	if len(stream.acked) != 1 || stream.acked[0] != "1-0" {
-		t.Errorf("expected msg to be acked, got %v", stream.acked)
+	if sender.count() != 0 {
+		t.Errorf("expected no send for malformed payload, got %d", sender.count())
 	}
 }
 
-func TestDeadLetter_PublishFailureNotAcking(t *testing.T) {
-	stream := &mockStream{errDL: errors.New("publish error")}
-	mailer := NewMailer(stream, "test_group", 1, nil)
-	msg := mockMessage{id: "1-0", payload: []byte("data")}
+func TestProcess_SMTPFailureExhausted_Retries(t *testing.T) {
+	sender := &fakeSender{failures: 1000} // always fail
+	m := newMailer(sender)
+	s := &fakeSettler{}
 
-	mailer.deadLetter(context.Background(), 1, msg, "test failure")
+	m.process(context.Background(), mustJSON(t, mq.DeliveryMessage{Event: mq.EventNewRelease, Email: "u@example.com", Repo: "o/r", Release: "v1"}), s)
 
-	if len(stream.acked) != 0 {
-		t.Errorf("expected msg NOT to be acked on DL publish failure, got %v", stream.acked)
+	if s.retried == "" {
+		t.Fatalf("expected retry, got ack=%v deadLetter=%q", s.acked, s.deadLettered)
+	}
+	if sender.count() != m.maxRetries {
+		t.Errorf("expected %d send attempts, got %d", m.maxRetries, sender.count())
 	}
 }
 
-func TestDeadLetter_PublishSuccessAcking(t *testing.T) {
-	stream := &mockStream{}
-	mailer := NewMailer(stream, "test_group", 1, nil)
-	msg := mockMessage{id: "1-0", payload: []byte("data")}
+func TestProcess_SMTPRecovers_Acks(t *testing.T) {
+	sender := &fakeSender{failures: 2} // fail twice, succeed on third
+	m := newMailer(sender)
+	s := &fakeSettler{}
 
-	mailer.deadLetter(context.Background(), 1, msg, "test success")
+	m.process(context.Background(), mustJSON(t, mq.DeliveryMessage{Event: mq.EventNewRelease, Email: "u@example.com", Repo: "o/r", Release: "v1"}), s)
 
-	if len(stream.deadLetters) != 1 {
-		t.Fatalf("expected 1 dead letter, got %d", len(stream.deadLetters))
+	if !s.acked {
+		t.Fatalf("expected ack after recovery, got retry=%q deadLetter=%q", s.retried, s.deadLettered)
 	}
-
-	dlPayload, ok := stream.deadLetters[0].(map[string]any)
-	if !ok {
-		t.Fatalf("expected dead letter payload to be map[string]any, got %T", stream.deadLetters[0])
-	}
-	if dlPayload["original_id"] != "1-0" {
-		t.Errorf("expected original_id = 1-0, got %v", dlPayload["original_id"])
-	}
-	if dlPayload["reason"] != "test success" {
-		t.Errorf("expected reason = test success, got %v", dlPayload["reason"])
-	}
-	if !reflect.DeepEqual(dlPayload["payload"], []byte("data")) {
-		t.Errorf("expected payload = data, got %v", dlPayload["payload"])
-	}
-
-	if len(stream.acked) != 1 || stream.acked[0] != "1-0" {
-		t.Errorf("expected msg to be acked, got %v", stream.acked)
+	if sender.count() != 3 {
+		t.Errorf("expected 3 send attempts, got %d", sender.count())
 	}
 }
