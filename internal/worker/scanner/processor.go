@@ -107,7 +107,7 @@ func (p *domainRepoProcessor) handleNewRelease(repo *db.Repository, latestReleas
 
 	for _, sub := range subs {
 		if err := p.notifier.SendNewRelease(&sub, repo, latestRelease); err != nil {
-			logger.Log.Error("failed to notify subscriber", zap.String("email", sub.Email), zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
+			logger.Log.Error("failed to notify subscriber", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}
 }
@@ -121,7 +121,7 @@ func (p *domainRepoProcessor) handleRepoMoved(repo *db.Repository) {
 
 	for _, sub := range subs {
 		if err := p.notifier.SendRepoMoved(&sub, repo); err != nil {
-			logger.Log.Error("failed to notify subscriber", zap.String("email", sub.Email), zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
+			logger.Log.Error("failed to notify subscriber", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}
 
