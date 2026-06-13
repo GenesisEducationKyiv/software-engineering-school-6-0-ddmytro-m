@@ -3,7 +3,7 @@
 ## Status
 Accepted
 
-Amends [ADR 003](003_redis_streams_for_mq.md): Redis Streams remains in place, but its scope is narrowed to point-to-point command delivery.
+Supersedes [ADR 003](003_redis_streams_for_mq.md) for messaging: Redis Streams is removed as the message queue. Both events and commands now flow through RabbitMQ; Redis is retained only as the GitHub response cache and the notifier's idempotency store.
 
 ## Context
 
@@ -25,31 +25,37 @@ Candidates considered: RabbitMQ, Apache Kafka, NATS JetStream. Kafka is operatio
 
 ## Decision
 
-We will introduce **RabbitMQ** as a dedicated **event broker**, alongside the existing Redis Streams **command bus**. The two carry different kinds of messages:
+We will adopt **RabbitMQ** as the broker for **both** message kinds, carried on two separate exchanges. Redis is removed from the messaging path entirely; it remains only as the GitHub response cache and the notifier's idempotency store.
 
 | Channel | Carries | Semantics | Example |
 |---------|---------|-----------|---------|
-| RabbitMQ topic exchange | **Events** — facts, past tense | publish/subscribe, fan-out by routing key | `release.detected` |
-| Redis Stream `messages:delivery` | **Commands** — imperatives | point-to-point work queue, single consumer type | "send this email" |
+| RabbitMQ topic exchange `github_scanner.events` | **Events** — facts, past tense | publish/subscribe, fan-out by routing key | `release.detected` |
+| RabbitMQ topic exchange `github_scanner.commands` | **Commands** — imperatives | point-to-point work queue, single consumer type | `email.send` |
+
+Both kinds flow through the broker, but the distinction is preserved: events are facts published to a fan-out-capable topic exchange (any number of consumers may bind), while commands are work orders addressed to one consumer type. Producers always publish to an exchange + routing key and never name a queue, so a producer never knows its consumers (see the dedicated commands exchange below).
 
 ### Topology
 
-- Durable topic exchange `github_scanner.events`.
-- Producers publish domain events with routing keys equal to the event type:
+Two durable topic exchanges: `github_scanner.events` and `github_scanner.commands`.
+
+- The server publishes domain events to `github_scanner.events` with routing keys equal to the event type:
   - `release.detected` — the scanner found a new release for a subscribed repository
   - `repository.moved` — the scanner detected a repository ID mismatch (moved/renamed)
   - `subscription.created` — the HTTP API registered a pending subscription needing verification
 - Every event is wrapped in a versioned envelope: `{id (uuid), type, occurred_at, version, payload}`. The `id` enables consumer-side deduplication; `version` enables schema evolution.
-- A new **Notification service** (`cmd/notifier`) owns a durable queue `notifications` bound to the exchange. It is the single place where notification policy lives: it consumes events, decides what notification they warrant, and publishes `DeliveryMessage` commands to the existing Redis Stream. The mailer is unchanged.
+- The **Notification service** (`cmd/notifier`) owns the durable `notifications` queue bound to the events exchange. It is the single place where notification policy lives: it consumes events, decides what notification they warrant, and publishes `DeliveryMessage` commands to `github_scanner.commands` (routing key `email.send`).
+- The **mailer** (`cmd/mailer`) owns the durable `email.delivery` queue bound to the commands exchange. It consumes commands and sends email via SMTP. Because the notifier publishes to the commands *exchange* rather than the queue, adding a second command consumer (e.g. an SMS sender) is a new queue + binding with no notifier change.
+- Each consumer endpoint is a queue set — main + tiered retry queues + a dead-letter queue (see Reliability).
 
 ### Reliability measures
 
 - **Durability**: durable exchange and queues, persistent delivery mode; survives broker restart.
 - **Publisher confirms**: publishing fails loudly on nack/timeout so callers can retry; a failed scanner publish is additionally self-healing because the repository is rescanned next interval.
-- **At-least-once consumption**: manual acks with prefetch (QoS). A message is acked only *after* the resulting command has been successfully published to the Redis Stream. A consumer crash mid-message causes broker-side redelivery.
-- **Idempotent consumers**: because at-least-once implies duplicates, the notifier deduplicates on the envelope `id` (Redis `SETNX` with TTL) before emitting commands, preventing duplicate emails.
-- **Retry topology**: on transient failure the message is republished to a wait queue (`notifications.retry`, per-queue TTL, dead-letter exchange pointing back to the main queue), with the attempt count tracked in a header. After N attempts the message goes to `notifications.dlq` for inspection and manual replay.
-- **Poison messages**: malformed payloads and unknown event types go directly to the DLQ — never requeued, avoiding infinite redelivery loops.
+- **At-least-once consumption**: manual acks with prefetch (QoS). A message is acked only *after* its downstream effect succeeds — the notifier acks an event only after the command is published to the broker; the mailer acks a command only after SMTP send succeeds. A consumer crash mid-message causes broker-side redelivery.
+- **Idempotent consumers**: because at-least-once implies duplicates, the notifier deduplicates on the envelope `id` (Redis `SET NX` with TTL) before emitting commands, preventing duplicate emails. If the command publish then fails, the dedup key is rolled back so the retry is not skipped.
+- **Tiered exponential backoff retry**: each endpoint has one wait queue per retry tier (`<queue>.retry.0..N-1`) with TTL `base * factor^i`. On transient failure a consumer republishes the message to the tier matching its attempt count, incrementing an `x-attempts` header; the wait queue dead-letters it back to the main queue (via the default exchange) after the delay. After the configured number of tiers the message goes to `<queue>.dlq`. Per-queue TTL is used rather than per-message TTL to avoid head-of-line blocking. The mailer additionally retries SMTP in-process with exponential backoff before falling back to this broker-level retry.
+- **Shared retry policy**: the retry tier count and TTLs are shared config (`RABBITMQ_RETRY_*`). Every service declares the full topology on connect, so the policy must be identical across services or RabbitMQ rejects the queue redeclaration with `PRECONDITION_FAILED`.
+- **Poison messages**: malformed payloads and unknown event/command types go directly to the DLQ — never requeued, avoiding infinite redelivery loops.
 - **Auto-reconnect**: publishers and consumers watch connection/channel close notifications and redial with capped exponential backoff, re-declaring topology on reconnect.
 - **Process-level recovery**: all services run with container restart policies (`restart: unless-stopped`); RabbitMQ ships with a healthcheck and downstream services gate on it.
 
@@ -70,6 +76,6 @@ We will introduce **RabbitMQ** as a dedicated **event broker**, alongside the ex
 ### Negative
 
 - **One more stateful service** to deploy, monitor, back up, and upgrade — exactly the cost ADR 003 avoided. The requirements changed; the cost is now justified.
-- **Two messaging systems coexist.** The events-vs-commands split is principled but means developers must know which channel a message belongs on. The table above is the rule.
-- **More concepts**: connections vs. channels, confirm modes, exchange types — a steeper learning curve than `XADD`/`XREADGROUP`.
+- **More concepts**: connections vs. channels, confirm modes, exchange types, tiered wait queues — a steeper learning curve than `XADD`/`XREADGROUP`.
 - **At-least-once duplicates** are now an explicit concern requiring idempotency keys, where the previous single-consumer design mostly hid them.
+- **Shared retry-topology config**: because every service declares the full topology, the retry policy is global rather than per-consumer; diverging values break startup.

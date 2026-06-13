@@ -3,7 +3,7 @@
 ## Status
 Accepted
 
-Amended by [ADR 005](005_rabbitmq_event_broker.md): Redis Streams remains the point-to-point command bus for email delivery, but domain events now flow through a RabbitMQ broker.
+Superseded by [ADR 005](005_rabbitmq_event_broker.md): Redis Streams is no longer used as the message queue — both events and commands now flow through RabbitMQ. Redis remains only for the GitHub response cache and consumer deduplication.
 
 ## Context
 

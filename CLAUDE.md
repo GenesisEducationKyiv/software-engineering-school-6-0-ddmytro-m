@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```shell
 make run              # go run cmd/server/main.go  (alias: run:server)
 make run:mailer       # go run cmd/mailer/main.go
-make build            # build both server and mailer binaries
+make run:notifier     # go run cmd/notifier/main.go
+make build            # build server, mailer, and notifier binaries
 make build:server     # go build -o bin/server cmd/server/main.go
 make build:mailer     # go build -o bin/mailer cmd/mailer/main.go
+make build:notifier   # go build -o bin/notifier cmd/notifier/main.go
 make lint             # golangci-lint run
 make lint:fix         # golangci-lint run --fix
 
@@ -17,7 +19,7 @@ make test:unit        # go test -v -tags="unit" ./...
 make test:integration # go test -v -tags="integration" ./...  (requires Docker)
 make test             # both unit + integration
 
-make docker:up        # docker compose --profile app up -d  (postgres, redis, app, mailer)
+make docker:up        # docker compose --profile app up -d  (postgres, redis, rabbitmq, app, notifier, mailer)
 make docker:down      # docker compose --profile app down --remove-orphans
 make docker:logs      # docker compose --profile app logs -f
 make docker:test      # docker compose run --rm test
@@ -33,9 +35,12 @@ Required env vars: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SMTP_HOST`, 
 
 ## Architecture
 
-Two separate binaries are built and deployed:
-- **`cmd/server/main.go`** — runs the Scanner and the HTTP server (two goroutines)
-- **`cmd/mailer/main.go`** — runs the Mailer consumer (standalone service)
+Three separate binaries are built and deployed, communicating only through the RabbitMQ broker:
+- **`cmd/server/main.go`** — runs the Scanner and the HTTP server (two goroutines); publishes domain events
+- **`cmd/notifier/main.go`** — consumes events, applies notification policy, publishes email commands
+- **`cmd/mailer/main.go`** — consumes email commands and sends them via SMTP
+
+Messaging uses two RabbitMQ topic exchanges (see ADR 005): `github_scanner.events` (facts) and `github_scanner.commands` (work orders). Redis is no longer a message queue — it serves only the GitHub response cache and the notifier's dedup keys.
 
 ### HTTP layer (`internal/transport/http/`)
 Gin router with a Prometheus middleware. `SubscriptionHandler` owns four routes:
@@ -47,7 +52,7 @@ Gin router with a Prometheus middleware. `SubscriptionHandler` owns four routes:
 `SubscriptionHandler` depends on three interfaces (defined in `handlers/store.go`):
 - `SubscriptionRepository` — all DB access; implemented by `gormSubscriptionStore`
 - `RepoResolver` — GitHub repo lookup; satisfied structurally by `*github.Client`
-- `EmailSender` — queues verification/notification emails; satisfied by `*mq.EmailMQ`
+- `EmailSender` — publishes a `subscription.created` event; satisfied by `*eventpublisher.Publisher`
 
 ### GitHub API transport stack (`internal/api/github/`)
 Requests flow through a layered `http.RoundTripper` chain built in `main.go`:
@@ -65,26 +70,29 @@ The scanner is a quota-aware fanout pipeline:
 - **RepoProducer** (`producer.go`): every `SCANNER_PRODUCER_INTERVAL_SECONDS`, queries repos due for scanning (idle, last scanned > `SCANNER_MIN_INTERVAL_SECONDS` ago) and enqueues them; uses pessimistic RPS so the queue empties before the next batch
 - **WorkerPool** (`worker.go`): N goroutines drain the channel; each calls `quota.Wait()` before processing
 - **RepoProcessor** (`processor.go`): fetches the latest release via GitHub API, compares with stored `LastRelease`; on change, notifies all active subscribers via `Notifier`
-- **Notifier** (`notifier.go`): publishes typed `DeliveryMessage` events to the Redis stream
+- **Notifier** (`notifier.go`): interface implemented by `*eventpublisher.Publisher`, which emits `release.detected` / `repository.moved` domain events to the broker
 
 On startup, the scanner calls `store.RecoverStuckRepos()` to reset any repos left in `processing` state from a previous crash.
 
-### Message queue (`internal/infra/mq/`, `internal/infra/redis/`)
-Redis Streams are used as the MQ. `redis.Stream` is a generic JSON publisher/consumer. `mq.EmailMQ` wraps it with domain event types: `new_release`, `repo_moved`, `email_verification`.
+### Broker (`internal/infra/rabbitmq/`, `internal/events/`, `internal/infra/eventpublisher/`)
+RabbitMQ is the message broker. `internal/events` defines the versioned event envelope and payloads. `internal/infra/rabbitmq` provides: a self-reconnecting `Connection` that re-declares topology; a `Publisher` (publisher confirms, persistent); a `Consumer` (manual ack, prefetch, `Settler` for ack/retry/dead-letter); and `topology.go` declaring both exchanges and per-consumer `QueueSet`s (main + tiered `*.retry.N` wait queues + `*.dlq`). `RetryPolicy` defines tiered exponential backoff; it is shared config so all services declare identical topology. `eventpublisher` adapts the scanner `Notifier` / handler `EmailSender` interfaces onto the events exchange. Command schema (`new_release`, `repo_moved`, `email_verification`) lives in `internal/infra/mq` (`DeliveryMessage`).
+
+### Notifier worker (`internal/worker/notifier/`)
+Consumes the `notifications` queue, deduplicates events by envelope ID (`internal/infra/redis` `Dedup`, `SET NX`), maps each event to a `DeliveryMessage`, and publishes it to the commands exchange. Acks only after a successful publish; rolls back the dedup key and retries on failure; dead-letters poison/unknown events.
 
 ### Mailer worker (`internal/worker/mailer/`)
-Consumes from `messages:delivery` stream (consumer group `mailer_group`, N concurrent consumers). Dispatches to `internal/infra/smtp` based on event type.
+Consumes the `email.delivery` queue (N concurrent consumers). Builds an email per `DeliveryMessage` event type and sends via `internal/infra/smtp` with in-process exponential backoff, falling back to broker retry/DLQ.
 
 ### Database (`internal/infra/db/`)
 GORM + PostgreSQL. Schema is auto-migrated on startup. Two models:
 - `Repository`: tracks `GitHubID`, `Owner/Name`, `LastRelease` (embedded), `Status` (idle/processing), `LastScannedAt`
 - `Subscription`: tracks `Email`, `RepositoryID`, `Status` (pending/active/unsubscribed), `ConfirmToken`, `APIToken`
 
-`db.Get()` is a singleton initialized with `sync.Once`. Config is loaded via `config.LoadServerConfig()` (server) or `config.LoadMailerConfig()` (mailer) — each reads only the env vars its service needs.
+`db.Get()` is a singleton initialized with `sync.Once`. Config is loaded via `config.LoadServerConfig()` (server), `config.LoadNotifierConfig()` (notifier), or `config.LoadMailerConfig()` (mailer) — each reads only the env vars its service needs. The shared retry-tier settings live on `RabbitMQConfig` (`RABBITMQ_RETRY_*`) so all services declare matching topology.
 
 ## Testing
 
-Tests use build tags. Unit tests are self-contained; integration tests use **testcontainers** (requires Docker) to spin up real Redis and PostgreSQL instances. Tag patterns:
+Tests use build tags. Unit tests are self-contained; integration tests use **testcontainers** (requires Docker) to spin up real RabbitMQ, Redis, and PostgreSQL instances. Tag patterns:
 - `//go:build unit`
 - `//go:build integration`
 
@@ -92,7 +100,7 @@ Tests use build tags. Unit tests are self-contained; integration tests use **tes
 
 Architecture docs and ADRs are in `docs/`:
 - `docs/system_design.md` — high-level system design
-- `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ, modular microservices)
+- `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ, modular microservices, RabbitMQ event broker)
 
 ## Linting
 
