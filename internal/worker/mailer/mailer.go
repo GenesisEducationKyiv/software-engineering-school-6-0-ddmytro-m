@@ -21,16 +21,25 @@ type EmailSender interface {
 	SendEmail(ctx context.Context, to, subject, body string) error
 }
 
+// ResultPublisher reports the outcome of a verification email to the onboarding
+// saga. Both methods are correlated by the non-PII confirm token.
+type ResultPublisher interface {
+	VerificationDelivered(ctx context.Context, token string) error
+	VerificationFailed(ctx context.Context, token, reason string) error
+}
+
 // Mailer turns delivery commands into emails.
 type Mailer struct {
 	sender      EmailSender
+	results     ResultPublisher
 	maxRetries  int
 	baseBackoff time.Duration
 }
 
-// New creates a Mailer.
-func New(sender EmailSender) *Mailer {
-	return &Mailer{sender: sender, maxRetries: maxSMTPRetries, baseBackoff: time.Second}
+// New creates a Mailer. results may be nil, in which case verification outcomes
+// are not reported and failures fall back to broker-level retries.
+func New(sender EmailSender, results ResultPublisher) *Mailer {
+	return &Mailer{sender: sender, results: results, maxRetries: maxSMTPRetries, baseBackoff: time.Second}
 }
 
 // Handler adapts the mailer to a rabbitmq DeliveryHandler.
@@ -54,13 +63,48 @@ func (m *Mailer) process(ctx context.Context, body []byte, s rabbitmq.Settler) {
 		return
 	}
 
+	isVerification := msg.Event == mq.EventEmailVerification
+
 	if err := m.sendWithRetry(ctx, msg.Email, subject, text); err != nil {
+		if isVerification && m.results != nil {
+			// Terminal for the saga: report the failure and ack, instead of
+			// handing back to broker retries where the signal would be lost.
+			m.reportFailed(ctx, msg, err)
+			s.Ack()
+			return
+		}
 		// In-process retries exhausted; hand back to the broker to retry later.
 		s.Retry(ctx, "smtp send failed: "+err.Error())
 		return
 	}
 
+	if isVerification && m.results != nil {
+		m.reportDelivered(ctx, msg)
+	}
+
 	s.Ack()
+}
+
+// verificationToken extracts the saga correlation token from a command payload.
+func verificationToken(msg mq.DeliveryMessage) string {
+	tok, _ := msg.Payload["token"].(string)
+	return tok
+}
+
+// reportDelivered publishes a verification.delivered result; publish failures are
+// logged, not retried, since the email was already sent.
+func (m *Mailer) reportDelivered(ctx context.Context, msg mq.DeliveryMessage) {
+	if err := m.results.VerificationDelivered(ctx, verificationToken(msg)); err != nil {
+		logger.Log.Error("failed to publish verification.delivered result", zap.Error(err))
+	}
+}
+
+// reportFailed publishes a verification.failed result so the orchestrator can
+// compensate; publish failures are logged.
+func (m *Mailer) reportFailed(ctx context.Context, msg mq.DeliveryMessage, cause error) {
+	if err := m.results.VerificationFailed(ctx, verificationToken(msg), cause.Error()); err != nil {
+		logger.Log.Error("failed to publish verification.failed result", zap.Error(err))
+	}
 }
 
 func buildEmail(msg mq.DeliveryMessage) (subject, body string, known bool) {
