@@ -110,11 +110,7 @@ func Get() *gorm.DB {
 			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
 
-<<<<<<< HEAD
-		err = db.AutoMigrate(&Repository{}, &Subscription{}, &outbox.Row{})
-=======
-		err = db.AutoMigrate(&Repository{}, &Subscription{}, &OnboardingSaga{})
->>>>>>> 4c3c48a (feat: add OnboardingSaga persistence model)
+		err = db.AutoMigrate(&Repository{}, &Subscription{}, &outbox.Row{}, &OnboardingSaga{})
 		if err != nil {
 			logger.Log.Fatal("failed to migrate database", zap.Error(err))
 		}

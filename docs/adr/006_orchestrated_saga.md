@@ -6,6 +6,10 @@ Accepted
 Builds on [ADR 005](005_rabbitmq_event_broker.md): the saga rides the existing
 RabbitMQ exchanges and event envelope rather than introducing new infrastructure.
 
+> **Update:** the transactional outbox this ADR originally deferred (see "Out of
+> scope" below) now exists (`internal/infra/outbox`). Saga-start has been
+> rewritten to use it: see the amended "T2" step and the "Out of scope" section.
+
 ## Context
 
 After ADR 005 the system is three services that share nothing but the broker and
@@ -66,16 +70,18 @@ a random, unique, non-PII value that already flows end to end (handler →
 correlation id has to be threaded through the chain.
 
 ```
-Orchestrator (server)
+Handler (server)
 │
-├─ T1  create Subscription{status: pending}                 (local tx, Postgres)
+├─ T1  one local tx, Postgres: create/save Subscription{status: pending},
+│      start saga: persist OnboardingSaga{token, awaiting}, and queue the
+│      subscription.created outbox event — commits or rolls back together
 │
-├─ T2  start saga: persist OnboardingSaga{token, awaiting}  (local tx, Postgres)
-│      then publish subscription.created                    (events exchange)
-│        → notifier emits email.send command                (commands exchange)
+├─ T2  outbox relay asynchronously publishes subscription.created (events exchange)
+│        → notifier emits email.send command                     (commands exchange)
 │        → mailer sends the verification email via SMTP
 │
-└─ mailer reports the outcome as a domain event (events exchange):
+└─ mailer reports the outcome as a domain event (events exchange), consumed by
+   the orchestrator (server):
      • verification.delivered{token} → mark saga completed
      • verification.failed{token}    → C1: cancel the still-pending subscription,
                                         mark saga compensated
@@ -93,10 +99,13 @@ Concretely, what changes versus today:
   broker's tiered retry/DLQ) so the failure signal reaches the orchestrator
   instead of disappearing into a parked DLQ message. Non-verification commands
   (release, repo-moved) keep the ADR 005 broker-retry behaviour unchanged.
-- **The orchestrator (server) replaces the handler's fire-and-forget publish.**
-  Starting onboarding now persists an `OnboardingSaga` row and then publishes
-  `subscription.created`; if the publish fails the saga row is rolled back so the
-  handler can surface the error.
+- **Starting onboarding replaces the handler's fire-and-forget publish.** The
+  subscription write, the `OnboardingSaga` row, and the `subscription.created`
+  outbox event all commit in the same local transaction (`handlers.
+  SubscriptionRepository`), so there is no publish-failure case left to
+  compensate for at saga-start — the outbox already guarantees the event
+  survives once that transaction commits. The orchestrator itself owns none of
+  this; it only settles results.
 - **The orchestrator consumes the result events** on its own queue bound to the
   events exchange (`verification.delivered`, `verification.failed`), and settles
   the saga: complete on delivered, compensate on failed.

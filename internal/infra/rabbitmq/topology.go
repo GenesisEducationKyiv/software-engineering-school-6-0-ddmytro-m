@@ -73,9 +73,24 @@ var CommandsEndpoint = Endpoint{
 	},
 }
 
+// OnboardingSagaEndpoint is consumed by the server's saga orchestrator; it
+// carries the verification result events the mailer publishes.
+var OnboardingSagaEndpoint = Endpoint{
+	Exchange: EventsExchange,
+	RoutingKeys: []string{
+		RoutingKeyVerificationDelivered,
+		RoutingKeyVerificationFailed,
+	},
+	Queues: QueueSet{
+		Main:  "onboarding.saga",
+		Retry: "onboarding.saga.retry",
+		DLQ:   "onboarding.saga.dlq",
+	},
+}
+
 var exchanges = []string{EventsExchange, CommandsExchange}
 
-var endpoints = []Endpoint{NotificationsEndpoint, CommandsEndpoint}
+var endpoints = []Endpoint{NotificationsEndpoint, CommandsEndpoint, OnboardingSagaEndpoint}
 
 func declareTopology(ch *amqp.Channel, retry RetryPolicy) error {
 	for _, ex := range exchanges {

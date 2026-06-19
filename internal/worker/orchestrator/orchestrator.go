@@ -1,5 +1,8 @@
-// Package orchestrator runs the subscription-onboarding saga: it starts the
-// verification flow and settles or compensates it from the mailer's results.
+// Package orchestrator settles the subscription-onboarding saga from the
+// mailer's delivery results. Saga-start is not this package's concern: it
+// happens transactionally alongside the subscription write and its outbox
+// event (see handlers.SubscriptionRepository), so a saga only ever exists
+// once that transaction has durably committed.
 package orchestrator
 
 import (
@@ -16,12 +19,6 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
-// VerificationPublisher publishes the subscription.created event that drives the
-// forward path. Satisfied by *eventpublisher.Publisher.
-type VerificationPublisher interface {
-	SendEmailVerification(email, token string) error
-}
-
 // settler settles a single result delivery with the broker.
 type settler interface {
 	Ack()
@@ -31,30 +28,12 @@ type settler interface {
 
 // Orchestrator owns the onboarding saga state machine.
 type Orchestrator struct {
-	store     Store
-	publisher VerificationPublisher
+	store Store
 }
 
 // New creates an Orchestrator.
-func New(store Store, publisher VerificationPublisher) *Orchestrator {
-	return &Orchestrator{store: store, publisher: publisher}
-}
-
-// SendEmailVerification starts the onboarding saga: it persists saga state and
-// then publishes subscription.created. On publish failure the saga row is rolled
-// back so the caller can surface the error and a retry starts cleanly. It
-// satisfies the HTTP handler's EmailSender interface.
-func (o *Orchestrator) SendEmailVerification(email, token string) error {
-	if err := o.store.CreateSaga(token); err != nil {
-		return fmt.Errorf("create saga: %w", err)
-	}
-	if err := o.publisher.SendEmailVerification(email, token); err != nil {
-		if delErr := o.store.DeleteSaga(token); delErr != nil {
-			logger.Log.Error("failed to roll back saga row after publish failure", zap.Error(delErr))
-		}
-		return err
-	}
-	return nil
+func New(store Store) *Orchestrator {
+	return &Orchestrator{store: store}
 }
 
 // process handles one result event and settles it.

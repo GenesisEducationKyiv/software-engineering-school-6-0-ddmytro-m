@@ -21,8 +21,12 @@ import (
 
 	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/handlers"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/orchestrator"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/scanner"
 )
+
+// sagaResultPrefetch bounds unacked saga result events in flight.
+const sagaResultPrefetch = 10
 
 func main() {
 	logger.InitLogger()
@@ -84,14 +88,28 @@ func main() {
 
 	scn := scanner.NewScanner(orm, ghClient, rateLimitTransport, &cfg.Scanner)
 
+	// The orchestrator settles the onboarding saga from the mailer's delivery
+	// results; saga-start happens transactionally alongside the subscription
+	// write and its outbox event (see handlers.SubscriptionRepository).
+	orch := orchestrator.New(orchestrator.NewStore(orm))
+
 	subStore := handlers.NewSubscriptionStore(orm)
 	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
 	relay := outbox.NewRelay(orm, pub, cfg.Outbox.PollInterval, cfg.Outbox.BatchSize)
 
+	sagaConsumer := rabbitmq.NewConsumer(
+		rmqConn,
+		rabbitmq.OnboardingSagaEndpoint.Queues,
+		sagaResultPrefetch,
+		retryPolicy,
+		orch.Handler(),
+	)
+
 	go scn.Start(ctx)
 	go relay.Run(ctx)
+	go sagaConsumer.Start(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
 			logger.Log.Error("HTTP server error", zap.Error(err))

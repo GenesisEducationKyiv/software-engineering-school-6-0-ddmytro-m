@@ -79,15 +79,29 @@ func setupPostgresContainer(ctx context.Context) (testcontainers.Container, *gor
 		return nil, nil, err
 	}
 
-	err = orm.AutoMigrate(&infraDB.Repository{}, &infraDB.Subscription{}, &outbox.Row{})
+	err = orm.AutoMigrate(&infraDB.Repository{}, &infraDB.Subscription{}, &outbox.Row{}, &infraDB.OnboardingSaga{})
 
 	return pgc, orm, err
 }
 
 func getCleanDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	testDB.Exec("TRUNCATE TABLE subscriptions, repositories, outbox_rows RESTART IDENTITY CASCADE")
+	testDB.Exec("TRUNCATE TABLE subscriptions, repositories, outbox_rows, onboarding_sagas RESTART IDENTITY CASCADE")
 	return testDB
+}
+
+// sagaFor returns the onboarding saga for the given confirm token, if any.
+func sagaFor(t *testing.T, db *gorm.DB, confirmToken string) (infraDB.OnboardingSaga, bool) {
+	t.Helper()
+	var saga infraDB.OnboardingSaga
+	err := db.Where("confirm_token = ?", confirmToken).First(&saga).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return infraDB.OnboardingSaga{}, false
+	}
+	if err != nil {
+		t.Fatalf("query saga: %v", err)
+	}
+	return saga, true
 }
 
 // outboxRowFor returns the single outbox row with the given routing key, if any.
@@ -174,6 +188,17 @@ func TestSubscribe_Success(t *testing.T) {
 	}
 	if payload.Email != testEmail || payload.Token != sub.ConfirmToken {
 		t.Fatalf("expected outbox event for %s with token %s, got %+v", testEmail, sub.ConfirmToken, payload)
+	}
+
+	// the onboarding saga must start in the same transaction as the
+	// subscription write and its outbox event, so it can never be missing
+	// once the subscription itself is visible.
+	saga, ok := sagaFor(t, db, sub.ConfirmToken)
+	if !ok {
+		t.Fatal("expected an onboarding saga for the confirm token, found none")
+	}
+	if saga.State != infraDB.SagaAwaitingDelivery {
+		t.Errorf("saga state = %q, want %q", saga.State, infraDB.SagaAwaitingDelivery)
 	}
 }
 

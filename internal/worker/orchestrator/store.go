@@ -6,10 +6,10 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 )
 
-// Store persists onboarding-saga state and runs the subscription compensation.
+// Store looks up and settles onboarding-saga state and runs the subscription
+// compensation. Saga creation lives in handlers.SubscriptionRepository, in the
+// same transaction as the subscription write and its outbox event.
 type Store interface {
-	CreateSaga(token string) error
-	DeleteSaga(token string) error
 	SagaState(token string) (db.SagaState, error)
 	MarkCompleted(token string) error
 	MarkCompensated(token string) error
@@ -23,14 +23,6 @@ type gormStore struct {
 // NewStore creates a GORM-backed saga Store.
 func NewStore(database *gorm.DB) Store {
 	return &gormStore{db: database}
-}
-
-func (s *gormStore) CreateSaga(token string) error {
-	return s.db.Create(&db.OnboardingSaga{ConfirmToken: token, State: db.SagaAwaitingDelivery}).Error
-}
-
-func (s *gormStore) DeleteSaga(token string) error {
-	return s.db.Where("confirm_token = ?", token).Delete(&db.OnboardingSaga{}).Error
 }
 
 func (s *gormStore) SagaState(token string) (db.SagaState, error) {
