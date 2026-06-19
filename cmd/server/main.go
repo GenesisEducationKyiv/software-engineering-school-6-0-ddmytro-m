@@ -73,7 +73,7 @@ func main() {
 
 	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
 
-	subStore := handlers.NewSubscriptionStore(orm)
+	subStore := db.NewSubscriptionStore(orm)
 	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, emailMQ)
 	srv := transportHttp.NewServer(":8080", subHandler)
 

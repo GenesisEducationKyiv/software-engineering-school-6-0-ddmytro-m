@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
@@ -50,7 +49,7 @@ func (h *SubscriptionHandler) resolveOrCreateRepo(ctx context.Context, owner, na
 	if err == nil {
 		return repo, 0, nil
 	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+	if !errors.Is(err, db.ErrNotFound) {
 		return nil, http.StatusInternalServerError, errors.New("database error")
 	}
 
@@ -68,7 +67,7 @@ func (h *SubscriptionHandler) resolveOrCreateRepo(ctx context.Context, owner, na
 			return nil, http.StatusInternalServerError, errors.New("failed to save repository")
 		}
 		return existing, 0, nil
-	case errors.Is(lookupErr, gorm.ErrRecordNotFound):
+	case errors.Is(lookupErr, db.ErrNotFound):
 		newRepo := &db.Repository{GitHubID: ghRepo.Data.ID, Owner: owner, Name: name, Status: db.StatusIdle}
 		if createErr := h.store.CreateRepo(newRepo); createErr != nil {
 			return nil, http.StatusInternalServerError, errors.New("failed to save repository")
@@ -140,7 +139,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	}
 
 	sub, err := h.store.FindSubscription(req.Email, repo.ID)
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
@@ -216,7 +215,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 
 	sub, err := h.store.FindSubscriptionByConfirmToken(token)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Invalid or expired token"})
 			return
 		}
@@ -265,7 +264,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 
 	sub, err := h.store.FindSubscriptionByTokens(confirmToken, apiToken)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 			return
 		}
@@ -308,7 +307,7 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 	}
 
 	if _, err := h.store.FindSubscriptionByEmailAndToken(email, apiToken); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token for the given email"})
 			return
 		}
