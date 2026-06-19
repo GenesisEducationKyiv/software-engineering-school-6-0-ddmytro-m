@@ -20,6 +20,10 @@ const (
 	RoutingKeyRepositoryMoved = "repository.moved"
 	// RoutingKeySubscriptionCreated routes a subscription-created event.
 	RoutingKeySubscriptionCreated = "subscription.created"
+	// RoutingKeyVerificationDelivered routes a verification-delivered result event.
+	RoutingKeyVerificationDelivered = "verification.delivered"
+	// RoutingKeyVerificationFailed routes a verification-failed result event.
+	RoutingKeyVerificationFailed = "verification.failed"
 	// RoutingKeyEmailSend routes an email-send command.
 	RoutingKeyEmailSend = "email.send"
 

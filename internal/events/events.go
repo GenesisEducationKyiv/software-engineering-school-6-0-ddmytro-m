@@ -17,6 +17,11 @@ const (
 	TypeReleaseDetected     Type = "release.detected"
 	TypeRepositoryMoved     Type = "repository.moved"
 	TypeSubscriptionCreated Type = "subscription.created"
+
+	// Onboarding-saga result events, published by the mailer and consumed by the
+	// server orchestrator to settle or compensate the subscription saga.
+	TypeVerificationDelivered Type = "verification.delivered"
+	TypeVerificationFailed    Type = "verification.failed"
 )
 
 // Version is the current envelope schema version.
@@ -50,6 +55,19 @@ type SubscriptionCreated struct {
 	Token string `json:"token"`
 }
 
+// VerificationDelivered reports that a verification email was sent. The token
+// correlates the result with the onboarding saga; it is not PII.
+type VerificationDelivered struct {
+	Token string `json:"token"`
+}
+
+// VerificationFailed reports that a verification email permanently failed. The
+// token correlates the result with the onboarding saga; it is not PII.
+type VerificationFailed struct {
+	Token  string `json:"token"`
+	Reason string `json:"reason,omitempty"`
+}
+
 func newEnvelope(t Type, payload any) (Envelope, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -79,6 +97,16 @@ func NewSubscriptionCreated(p SubscriptionCreated) (Envelope, error) {
 	return newEnvelope(TypeSubscriptionCreated, p)
 }
 
+// NewVerificationDelivered builds a verification.delivered envelope.
+func NewVerificationDelivered(p VerificationDelivered) (Envelope, error) {
+	return newEnvelope(TypeVerificationDelivered, p)
+}
+
+// NewVerificationFailed builds a verification.failed envelope.
+func NewVerificationFailed(p VerificationFailed) (Envelope, error) {
+	return newEnvelope(TypeVerificationFailed, p)
+}
+
 // DecodeReleaseDetected reads the payload as a ReleaseDetected.
 func (e Envelope) DecodeReleaseDetected() (ReleaseDetected, error) {
 	var p ReleaseDetected
@@ -96,6 +124,20 @@ func (e Envelope) DecodeRepositoryMoved() (RepositoryMoved, error) {
 // DecodeSubscriptionCreated reads the payload as a SubscriptionCreated.
 func (e Envelope) DecodeSubscriptionCreated() (SubscriptionCreated, error) {
 	var p SubscriptionCreated
+	err := json.Unmarshal(e.Payload, &p)
+	return p, err
+}
+
+// DecodeVerificationDelivered reads the payload as a VerificationDelivered.
+func (e Envelope) DecodeVerificationDelivered() (VerificationDelivered, error) {
+	var p VerificationDelivered
+	err := json.Unmarshal(e.Payload, &p)
+	return p, err
+}
+
+// DecodeVerificationFailed reads the payload as a VerificationFailed.
+func (e Envelope) DecodeVerificationFailed() (VerificationFailed, error) {
+	var p VerificationFailed
 	err := json.Unmarshal(e.Payload, &p)
 	return p, err
 }
