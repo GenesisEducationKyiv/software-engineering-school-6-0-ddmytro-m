@@ -13,6 +13,7 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
@@ -67,7 +68,7 @@ func main() {
 		github.WithHTTPClient(httpClient),
 	)
 
-	stream := redis.NewStream(redisClient, mq.DeliveryStream)
+	stream := redis.NewStream(redisClient, contract.DeliveryStream)
 	deliveryPublisher := mq.NewDeliveryPublisher(stream)
 	emailMQ := mq.NewEmailMQ(deliveryPublisher)
 

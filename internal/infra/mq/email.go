@@ -1,38 +1,18 @@
-// Package mq provides message queue functionality for the application.
+// Package mq maps domain types into the delivery contract and publishes them.
+// It is server-side only; the mailer depends on internal/contract instead.
 package mq
 
 import (
 	"context"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 )
 
-// DeliveryStream is the Redis stream used for sending email delivery messages.
-const DeliveryStream = "messages:delivery"
-
-// EventType represents the type of event in a delivery message.
-type EventType string
-
-// Event types for email delivery.
-const (
-	EventNewRelease        EventType = "new_release"
-	EventRepoMoved         EventType = "repo_moved"
-	EventEmailVerification EventType = "email_verification"
-)
-
-// DeliveryMessage represents a message sent to the delivery stream.
-type DeliveryMessage struct {
-	Event   EventType      `json:"event"`
-	Email   string         `json:"email"`
-	Repo    string         `json:"repo,omitempty"`
-	Release string         `json:"release,omitempty"`
-	Payload map[string]any `json:"payload,omitempty"`
-}
-
 // Publisher defines the contract for publishing messages.
 type Publisher interface {
-	Publish(ctx context.Context, msg DeliveryMessage) error
+	Publish(ctx context.Context, msg contract.DeliveryMessage) error
 }
 
 // jsonPublisher is an unexported interface that defines the contract for a
@@ -47,7 +27,7 @@ type deliveryPublisherAdapter struct {
 }
 
 // Publish satisfies the Publisher interface by calling the underlying JSON publisher.
-func (a *deliveryPublisherAdapter) Publish(ctx context.Context, msg DeliveryMessage) error {
+func (a *deliveryPublisherAdapter) Publish(ctx context.Context, msg contract.DeliveryMessage) error {
 	return a.jp.Publish(ctx, msg)
 }
 
@@ -71,8 +51,8 @@ func NewEmailMQ(publisher Publisher) *EmailMQ {
 
 // SendNewRelease sends an email notification about a new release.
 func (mq *EmailMQ) SendNewRelease(sub *db.Subscription, repo *db.Repository, release *github.LatestRelease) error {
-	return mq.publisher.Publish(context.Background(), DeliveryMessage{
-		Event:   EventNewRelease,
+	return mq.publisher.Publish(context.Background(), contract.DeliveryMessage{
+		Event:   contract.EventNewRelease,
 		Email:   sub.Email,
 		Repo:    repo.Owner + "/" + repo.Name,
 		Release: release.TagName,
@@ -81,8 +61,8 @@ func (mq *EmailMQ) SendNewRelease(sub *db.Subscription, repo *db.Repository, rel
 
 // SendRepoMoved sends an email notification about a moved or renamed repository.
 func (mq *EmailMQ) SendRepoMoved(sub *db.Subscription, repo *db.Repository) error {
-	return mq.publisher.Publish(context.Background(), DeliveryMessage{
-		Event: EventRepoMoved,
+	return mq.publisher.Publish(context.Background(), contract.DeliveryMessage{
+		Event: contract.EventRepoMoved,
 		Email: sub.Email,
 		Repo:  repo.Owner + "/" + repo.Name,
 	})
@@ -90,8 +70,8 @@ func (mq *EmailMQ) SendRepoMoved(sub *db.Subscription, repo *db.Repository) erro
 
 // SendEmailVerification sends an email verification link to a user.
 func (mq *EmailMQ) SendEmailVerification(email, token string) error {
-	return mq.publisher.Publish(context.Background(), DeliveryMessage{
-		Event: EventEmailVerification,
+	return mq.publisher.Publish(context.Background(), contract.DeliveryMessage{
+		Event: contract.EventEmailVerification,
 		Email: email,
 		Payload: map[string]any{
 			"token": token,

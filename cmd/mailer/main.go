@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
@@ -43,7 +43,7 @@ func main() {
 		cfg.SMTP.From, cfg.SMTP.SenderEmail,
 	)
 
-	stream := redis.NewStream(redisClient, mq.DeliveryStream)
+	stream := redis.NewStream(redisClient, contract.DeliveryStream)
 	mlr := mailer.NewMailer(stream, "mailer_group", cfg.Workers, smtpClient)
 
 	logger.Log.Info("Mailer started")

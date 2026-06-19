@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
@@ -64,15 +64,15 @@ func TestBuildEmail(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		msg         mq.DeliveryMessage
+		msg         contract.DeliveryMessage
 		wantSubject string
 		wantBody    string
 		wantKnown   bool
 	}{
 		{
 			name: "NewRelease",
-			msg: mq.DeliveryMessage{
-				Event:   mq.EventNewRelease,
+			msg: contract.DeliveryMessage{
+				Event:   contract.EventNewRelease,
 				Repo:    "owner/repo",
 				Release: "v1.0.0",
 			},
@@ -82,8 +82,8 @@ func TestBuildEmail(t *testing.T) {
 		},
 		{
 			name: "RepoMoved",
-			msg: mq.DeliveryMessage{
-				Event: mq.EventRepoMoved,
+			msg: contract.DeliveryMessage{
+				Event: contract.EventRepoMoved,
 				Repo:  "owner/repo",
 			},
 			wantSubject: "Repository moved: owner/repo",
@@ -92,8 +92,8 @@ func TestBuildEmail(t *testing.T) {
 		},
 		{
 			name: "EmailVerification",
-			msg: mq.DeliveryMessage{
-				Event: mq.EventEmailVerification,
+			msg: contract.DeliveryMessage{
+				Event: contract.EventEmailVerification,
 				Payload: map[string]any{
 					"token": "secret-token",
 				},
@@ -104,7 +104,7 @@ func TestBuildEmail(t *testing.T) {
 		},
 		{
 			name: "UnknownEvent",
-			msg: mq.DeliveryMessage{
+			msg: contract.DeliveryMessage{
 				Event: "unknown_event_type",
 			},
 			wantSubject: "",
@@ -163,7 +163,7 @@ func TestProcessMessage_UnknownEvent(t *testing.T) {
 	stream := &mockStream{}
 	mailer := NewMailer(stream, "test_group", 1, nil)
 
-	validJSON, _ := json.Marshal(mq.DeliveryMessage{Event: "unknown_event_type"})
+	validJSON, _ := json.Marshal(contract.DeliveryMessage{Event: "unknown_event_type"})
 	msg := mockMessage{id: "1-0", payload: validJSON}
 
 	mailer.processMessage(context.Background(), 1, msg)
