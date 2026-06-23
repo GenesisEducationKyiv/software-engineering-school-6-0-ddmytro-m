@@ -5,3 +5,4 @@
 - [Modular Architecture with Microservice Extraction](004_modular_microservices.md)
 - [RabbitMQ as Event Broker for Domain Events](005_rabbitmq_event_broker.md)
 - [Orchestrated Saga for Cross-Service Subscription Onboarding](006_orchestrated_saga.md)
+- [gRPC as an Alternative Transport for the Notifier → Mailer Link](007_grpc_mailer_transport.md)
