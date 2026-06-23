@@ -181,9 +181,17 @@ func runAMQP(ctx context.Context, url string, n int) error {
 	conn := rabbitmq.Dial(url, retry)
 	defer func() { _ = conn.Close() }()
 
+	// Use a private queue and routing key so the harness drains its own batch
+	// instead of competing with a running mailer service on email.delivery.
+	routingKey := fmt.Sprintf("loadtest.%d", os.Getpid())
+	queue := fmt.Sprintf("loadtest.%d", os.Getpid())
+	if declErr := conn.DeclareEphemeralQueue(rabbitmq.CommandsExchange, queue, routingKey); declErr != nil {
+		return declErr
+	}
+
 	sender := &countingSender{target: int64(n), done: make(chan struct{})}
 	mlr := mailer.New(sender, nil)
-	consumer := rabbitmq.NewConsumer(conn, rabbitmq.CommandsEndpoint.Queues, 50, retry, mlr.Handler())
+	consumer := rabbitmq.NewConsumer(conn, rabbitmq.QueueSet{Main: queue}, 50, retry, mlr.Handler())
 
 	consumeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -192,7 +200,7 @@ func runAMQP(ctx context.Context, url string, n int) error {
 	publisher := rabbitmq.NewPublisher(conn)
 	start := time.Now()
 	for range n {
-		if pubErr := publisher.Publish(ctx, rabbitmq.CommandsExchange, rabbitmq.RoutingKeyEmailSend, sampleCommand); pubErr != nil {
+		if pubErr := publisher.Publish(ctx, rabbitmq.CommandsExchange, routingKey, sampleCommand); pubErr != nil {
 			return pubErr
 		}
 	}

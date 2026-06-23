@@ -45,6 +45,45 @@ make docker:down
 make docker:logs
 ```
 
+## Load testing
+
+`cmd/loadtest` is a throughput harness that drives a fixed number of email
+delivery commands through the notifier → mailer transport against a **no-op
+email sender**, so the numbers reflect transport overhead rather than SMTP
+latency. It supports three modes:
+
+| Transport | Description |
+|-----------|-------------|
+| `grpc` (unary) | one `Send` RPC per command; reports throughput + p50/p99 latency |
+| `grpc -stream` | a single bidi `SendStream` RPC |
+| `amqp` | publishes a batch to the broker and drains it through a real mailer consumer |
+
+The AMQP mode declares its **own ephemeral, exclusive queue** (bound to the
+commands exchange with a per-process routing key) so it drains its own batch
+instead of competing with a running `cmd/mailer` on the shared `email.delivery`
+queue. The `amqp` mode therefore needs a reachable RabbitMQ (`make docker:up`).
+
+```shell
+make bench:grpc          # go run cmd/loadtest/main.go -transport grpc
+make bench:grpc-stream   # ... -transport grpc -stream
+make bench:amqp          # ... -transport amqp   (needs RabbitMQ)
+# flags: -n <count> (default 10000), -rabbitmq-url <url>
+```
+
+### Results
+
+`n=20000`, go 1.26.1, x86_64 (see [`loadtest-results.log`](loadtest-results.log)):
+
+| Transport | Elapsed | Throughput |
+|-----------|---------|------------|
+| grpc-unary  | 1.793s | ~11,150 msg/s (p50 84µs, p99 223µs) |
+| grpc-stream | 0.934s | ~21,400 msg/s |
+| amqp        | 9.386s | ~2,130 msg/s |
+
+gRPC (especially streaming) is roughly an order of magnitude faster than the
+broker path, which pays for JSON encoding, publisher confirms, and per-message
+acks.
+
 ## Testing
 see [testing.md](testing.md)
 
