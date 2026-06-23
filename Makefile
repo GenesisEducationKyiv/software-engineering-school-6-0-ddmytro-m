@@ -45,6 +45,20 @@ run\:mailer:
 run\:notifier:
 	$(GO) run cmd/notifier/main.go
 
+.PHONY: build\:loadtest bench\:grpc bench\:grpc-stream bench\:amqp
+
+build\:loadtest:
+	$(GO) build -o bin/loadtest cmd/loadtest/main.go
+
+bench\:grpc:
+	$(GO) run cmd/loadtest/main.go -transport grpc
+
+bench\:grpc-stream:
+	$(GO) run cmd/loadtest/main.go -transport grpc -stream
+
+bench\:amqp:
+	$(GO) run cmd/loadtest/main.go -transport amqp
+
 build: build\:server build\:mailer build\:notifier
 
 build\:server:
