@@ -1,4 +1,23 @@
 GO := go
+BUF := buf
+
+
+.PHONY: proto\:lint proto\:gen proto\:fmt proto\:breaking proto\:tools
+
+proto\:tools:
+	$(GO) install github.com/bufbuild/buf/cmd/buf@v1.50.0
+
+proto\:lint:
+	$(BUF) lint
+
+proto\:breaking:
+	$(BUF) breaking --against '.git#branch=main'
+
+proto\:fmt:
+	$(BUF) format -w
+
+proto\:gen:
+	$(BUF) generate
 
 
 .PHONY: docker\:up docker\:down docker\:logs docker\:test
