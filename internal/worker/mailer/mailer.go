@@ -4,6 +4,7 @@ package mailer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,6 +22,9 @@ const maxSMTPRetries = 5
 // failure) has already happened by this point - this is just closing the
 // window on reporting it.
 const maxResultReportRetries = 3
+
+// ErrUnknownEmailType marks a poison command
+var ErrUnknownEmailType = errors.New("unknown email type")
 
 // EmailSender sends a single email.
 type EmailSender interface {
@@ -55,7 +59,33 @@ func (m *Mailer) Handler() rabbitmq.DeliveryHandler {
 	}
 }
 
-// process handles one command and settles it.
+// Deliver builds and sends the email for one command, reporting verification
+// saga outcomes as a side effect. It is transport-agnostic: both the AMQP
+// consumer and the gRPC server call it. A poison command returns
+// ErrUnknownEmailType; any other non-nil error is a retryable send failure.
+func (m *Mailer) Deliver(ctx context.Context, msg mq.DeliveryMessage) error {
+	subject, text, known := buildEmail(msg)
+	if !known {
+		return fmt.Errorf("%w: %q", ErrUnknownEmailType, msg.Event)
+	}
+
+	isVerification := msg.Event == mq.EventEmailVerification
+
+	if err := m.sendWithRetry(ctx, msg.Email, subject, text); err != nil {
+		if isVerification && m.results != nil {
+			m.reportFailed(ctx, msg, err)
+		}
+		return err
+	}
+
+	if isVerification && m.results != nil {
+		m.reportDelivered(ctx, msg)
+	}
+
+	return nil
+}
+
+// process handles one command and settles it with the broker.
 func (m *Mailer) process(ctx context.Context, body []byte, s rabbitmq.Settler) {
 	var msg mq.DeliveryMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
@@ -63,32 +93,20 @@ func (m *Mailer) process(ctx context.Context, body []byte, s rabbitmq.Settler) {
 		return
 	}
 
-	subject, text, known := buildEmail(msg)
-	if !known {
-		s.DeadLetter(ctx, fmt.Sprintf("unknown event type: %q", msg.Event))
-		return
-	}
-
-	isVerification := msg.Event == mq.EventEmailVerification
-
-	if err := m.sendWithRetry(ctx, msg.Email, subject, text); err != nil {
-		if isVerification && m.results != nil {
-			// Terminal for the saga: report the failure and ack, instead of
-			// handing back to broker retries where the signal would be lost.
-			m.reportFailed(ctx, msg, err)
-			s.Ack()
-			return
-		}
+	err := m.Deliver(ctx, msg)
+	switch {
+	case err == nil:
+		s.Ack()
+	case errors.Is(err, ErrUnknownEmailType):
+		s.DeadLetter(ctx, err.Error())
+	case msg.Event == mq.EventEmailVerification && m.results != nil:
+		// Terminal for the saga: the failure was already reported, so ack
+		// instead of handing back to broker retries where the signal is lost.
+		s.Ack()
+	default:
 		// In-process retries exhausted; hand back to the broker to retry later.
 		s.Retry(ctx, "smtp send failed: "+err.Error())
-		return
 	}
-
-	if isVerification && m.results != nil {
-		m.reportDelivered(ctx, msg)
-	}
-
-	s.Ack()
 }
 
 // verificationToken extracts the saga correlation token from a command payload.
