@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package mailer.v1;
+
+// mirrors internal/infra/mq.EventType
+enum EmailType {
+  EMAIL_TYPE_UNSPECIFIED = 0;
+  EMAIL_TYPE_NEW_RELEASE = 1;
+  EMAIL_TYPE_REPO_MOVED = 2;
+  EMAIL_TYPE_EMAIL_VERIFICATION = 3;
+}
+
+// mirrors internal/infra/mq.DeliveryMessage
+message DeliveryCommand {
+  EmailType type = 1;
+  string email = 2;
+  string repo = 3;
+  string release = 4;
+  map<string, string> payload = 5;
+}
+
+message SendResult {
+  bool delivered = 1;
+  string reason = 2;
+}
+
+service MailerService {
+  rpc Send(DeliveryCommand) returns (SendResult);
+  rpc SendStream(stream DeliveryCommand) returns (stream SendResult);
+}
