@@ -1,0 +1,7 @@
+# loadtest results  2026-06-23T18:54:47Z  n=20000
+# go go1.26.1  host=x86_64
+
+transport=grpc-unary n=20000 elapsed=1.793s throughput=11156 msg/s
+  latency p50=84µs p99=223µs
+transport=grpc-stream n=20000 elapsed=934ms throughput=21422 msg/s
+transport=amqp n=20000 elapsed=9.386s throughput=2131 msg/s
