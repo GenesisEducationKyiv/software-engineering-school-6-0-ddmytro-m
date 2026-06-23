@@ -6,6 +6,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// Transport label values for mailer delivery metrics.
+const (
+	TransportAMQP = "amqp"
+	TransportGRPC = "grpc"
+)
+
 var (
 	// HTTP layer
 
@@ -77,4 +83,29 @@ var (
 		Name: "subscriptions_unsubscribe_successes_total",
 		Help: "Total number of successful unsubscribes.",
 	})
+
+	// MailerDeliveries counts delivery attempts by transport and outcome.
+	MailerDeliveries = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mailer_deliveries_total",
+			Help: "Total email delivery attempts by transport (amqp/grpc) and outcome.",
+		},
+		[]string{"transport", "outcome"},
+	)
+
+	// MailerDeliveryDuration tracks delivery latency in seconds by transport.
+	MailerDeliveryDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "mailer_delivery_duration_seconds",
+			Help:    "Email delivery latency in seconds by transport (amqp/grpc).",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"transport"},
+	)
 )
+
+// ObserveMailerDelivery records one delivery attempt for the given transport.
+func ObserveMailerDelivery(transport, outcome string, seconds float64) {
+	MailerDeliveries.WithLabelValues(transport, outcome).Inc()
+	MailerDeliveryDuration.WithLabelValues(transport).Observe(seconds)
+}
