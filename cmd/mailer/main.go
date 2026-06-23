@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -10,11 +11,14 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 
+	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/grpcgen/mailer/v1"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
+	grpcmailer "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/grpc/mailer"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
 )
 
@@ -61,15 +65,44 @@ func main() {
 	)
 
 	var wg sync.WaitGroup
+
+	if cfg.GRPCEnabled {
+		grpcServer, lis, listenErr := newGRPCServer(cfg.GRPCAddr, mlr)
+		if listenErr != nil {
+			logger.Log.Fatal("failed to listen for gRPC", zap.Error(listenErr))
+		}
+		wg.Go(func() {
+			logger.Log.Info("Mailer gRPC server started", zap.String("addr", cfg.GRPCAddr))
+			if serveErr := grpcServer.Serve(lis); serveErr != nil {
+				logger.Log.Error("gRPC server stopped", zap.Error(serveErr))
+			}
+		})
+		wg.Go(func() {
+			<-ctx.Done()
+			grpcServer.GracefulStop()
+		})
+	}
+
 	for range cfg.Workers {
 		wg.Go(func() {
 			consumer.Start(ctx)
 		})
 	}
 
-	logger.Log.Info("Mailer started", zap.Int("workers", cfg.Workers))
+	logger.Log.Info("Mailer started", zap.Int("workers", cfg.Workers), zap.Bool("grpc", cfg.GRPCEnabled))
 	<-ctx.Done()
 	logger.Log.Info("Mailer shutting down, waiting for workers...")
 	wg.Wait()
 	logger.Log.Info("Mailer stopped")
+}
+
+// newGRPCServer builds a gRPC server exposing the mailer on the given address.
+func newGRPCServer(addr string, d grpcmailer.Deliverer) (*grpc.Server, net.Listener, error) {
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	srv := grpc.NewServer()
+	mailerv1.RegisterMailerServiceServer(srv, grpcmailer.NewServer(d))
+	return srv, lis, nil
 }

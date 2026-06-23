@@ -13,6 +13,7 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
 const maxSMTPRetries = 5
@@ -25,6 +26,25 @@ const maxResultReportRetries = 3
 
 // ErrUnknownEmailType marks a poison command
 var ErrUnknownEmailType = errors.New("unknown email type")
+
+// Delivery outcome labels for metrics.
+const (
+	OutcomeDelivered = "delivered"
+	OutcomeFailed    = "failed"
+	OutcomePoison    = "poison"
+)
+
+// DeliveryOutcome classifies a Deliver result into a metrics outcome label.
+func DeliveryOutcome(err error) string {
+	switch {
+	case err == nil:
+		return OutcomeDelivered
+	case errors.Is(err, ErrUnknownEmailType):
+		return OutcomePoison
+	default:
+		return OutcomeFailed
+	}
+}
 
 // EmailSender sends a single email.
 type EmailSender interface {
@@ -93,7 +113,10 @@ func (m *Mailer) process(ctx context.Context, body []byte, s rabbitmq.Settler) {
 		return
 	}
 
+	start := time.Now()
 	err := m.Deliver(ctx, msg)
+	metrics.ObserveMailerDelivery(metrics.TransportAMQP, DeliveryOutcome(err), time.Since(start).Seconds())
+
 	switch {
 	case err == nil:
 		s.Ack()
