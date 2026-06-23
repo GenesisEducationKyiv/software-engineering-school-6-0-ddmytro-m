@@ -6,6 +6,20 @@ on:
     branches: [main]
 
 jobs:
+  proto:
+    name: Proto
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Lint protos and check breaking changes
+        uses: bufbuild/buf-action@v1
+        with:
+          version: "1.50.0"
+          push: false
+          archive: false
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
