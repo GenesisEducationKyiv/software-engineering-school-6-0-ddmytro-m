@@ -67,22 +67,33 @@ queue. The `amqp` mode therefore needs a reachable RabbitMQ (`make docker:up`).
 make bench:grpc          # go run cmd/loadtest/main.go -transport grpc
 make bench:grpc-stream   # ... -transport grpc -stream
 make bench:amqp          # ... -transport amqp   (needs RabbitMQ)
-# flags: -n <count> (default 10000), -rabbitmq-url <url>
+# flags: -n <count> (default 10000), -warmup <count> (default 1000, capped at n/10),
+#        -rabbitmq-url <url>
 ```
+
+Each run sends a warm-up batch first (untimed) so cold connection setup and
+HTTP/2 window ramp-up don't land inside the measured numbers.
 
 ### Results
 
-`n=20000`, go 1.26.1, x86_64 (see [`loadtest-results.log`](loadtest-results.log)):
+`n=20000`, `warmup=1000` (see [`loadtest-results.log`](loadtest-results.log) for
+the exact figures and the CPU model/core count they were measured on):
 
-| Transport | Elapsed | Throughput |
-|-----------|---------|------------|
-| grpc-unary  | 1.793s | ~11,150 msg/s (p50 84µs, p99 223µs) |
-| grpc-stream | 0.934s | ~21,400 msg/s |
-| amqp        | 9.386s | ~2,130 msg/s |
+| Transport | Throughput | p50 latency |
+|-----------|------------|-------------|
+| amqp                        | ~1k msg/s   | - |
+| grpc-unary                  | ~4.3k msg/s | ~200µs |
+| grpc-stream (pipelined)     | ~130k msg/s | not meaningful, see ADR 007 |
 
-gRPC (especially streaming) is roughly an order of magnitude faster than the
-broker path, which pays for JSON encoding, publisher confirms, and per-message
-acks.
+gRPC unary beats AMQP because AMQP publishing opens, confirms on, and closes a
+fresh channel per message (each a synchronous round trip to the broker) on top
+of durable delivery, while unary reuses one connection and only pays HTTP/2
+per-call framing. The bidi stream is ~30x faster than unary because the
+harness pipelines sends and receives on separate goroutines instead of
+blocking on each response before sending the next - the actual advantage bidi
+streaming has over unary calls. See
+[ADR 007](docs/adr/007_grpc_mailer_transport.md#measuring-throughput) for the
+full breakdown, including why stream latency isn't reported.
 
 ## Testing
 see [testing.md](testing.md)

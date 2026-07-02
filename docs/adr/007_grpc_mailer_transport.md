@@ -75,22 +75,66 @@ command hop, not the saga's result channel.
 ### Measuring throughput
 
 `cmd/loadtest` drives N commands through a chosen transport against a **no-op
-sender**, so the numbers reflect transport overhead, not SMTP. Both paths are
-also instrumented with `mailer_deliveries_total` and
-`mailer_delivery_duration_seconds`, labeled by `transport`, for live comparison
-in Grafana. Run `make bench:grpc`, `make bench:grpc-stream`, `make bench:amqp`
-(the last needs a running broker).
+sender**, so the numbers reflect transport overhead, not SMTP. Every run sends
+a warm-up batch first (past cold-start: connection setup, HTTP/2 window
+ramp-up) before timing starts, so a single run isn't dominated by first-use
+cost or OS scheduling jitter in that window. Both paths are also instrumented
+with `mailer_deliveries_total` and `mailer_delivery_duration_seconds`, labeled
+by `transport`, for live comparison in Grafana. Run `make bench:grpc`,
+`make bench:grpc-stream`, `make bench:amqp` (the last needs a running broker);
+results are captured in `loadtest-results.log`, including the CPU model and
+core count each run measured on.
 
-Indicative in-process loopback figures (10k× warm, no SMTP):
+TCP-loopback figures (n=20000, warmup=1000, no SMTP, 12-core i5-12500H — see
+`loadtest-results.log` for the exact numbers and header):
 
-| Transport | Throughput |
-| --- | --- |
-| gRPC unary | ~9.4k msg/s (p50 ~0.1 ms) |
-| gRPC bidi stream | ~17.7k msg/s |
+| Transport | Throughput | p50 latency |
+| --- | --- | --- |
+| AMQP | ~1k msg/s | - |
+| gRPC unary | ~4.3k msg/s | ~200µs |
+| gRPC bidi stream (pipelined) | ~130k msg/s | not meaningful, see below |
 
-AMQP figures depend on a running broker and are produced with `make bench:amqp`;
-the harness reports end-to-end publish→consume throughput for an apples-to-apples
-comparison.
+**Why AMQP is slowest.** The harness (and `rabbitmq.Publisher` in general)
+opens a fresh AMQP channel, enables publisher confirms on it, publishes, waits
+synchronously for the broker's confirm, and closes the channel — per message.
+`channel.open`/`channel.close` are themselves synchronous round trips to the
+broker in the AMQP protocol, so this pays for a full extra request/response
+on top of the publish-confirm wait, before the *next* message can even start.
+None of that is free-standing RabbitMQ overhead — it's an artifact of
+publishing without reusing a channel across messages, which is a known
+RabbitMQ anti-pattern. It also pays for durable, persisted delivery (`Persistent`
+delivery mode) and a full publish→queue→consumer→ack round trip, not just a
+request/response.
+
+**Why gRPC unary beats AMQP but trails the stream.** A unary `Send` reuses the
+same `grpc.ClientConn` (and its one underlying TCP connection) across calls,
+so there's no per-message connection setup, but each call still opens and
+closes its own HTTP/2 stream (a `HEADERS` + `END_STREAM` frame pair) and the
+benchmark loop waits for each response before issuing the next — no
+pipelining. What's left is HTTP/2 stream framing overhead plus one real
+network round trip per message, with nothing persisted.
+
+**Why the bidi stream is ~30x faster than unary.** `SendStream` opens one
+HTTP/2 stream for the *entire* batch, amortizing stream-setup cost across all
+n messages instead of paying it n times. More importantly, the loadtest client
+pipelines: a dedicated goroutine keeps calling `Send` without waiting for the
+matching `Recv`, so many requests are in flight on the wire simultaneously and
+the server's processing time for message *i* overlaps with the network
+transfer of message *i+1, i+2, ...* instead of every round trip serializing.
+This is the actual advantage bidi streaming has over unary calls — a
+send-then-block-on-recv loop on a stream (what an earlier version of this
+harness did) gains nothing over unary, since it still serializes one
+round trip at a time.
+
+No p50/p99 latency is reported for the pipelined stream: with the sender
+racing ahead unthrottled, recv-time minus send-time mostly measures how deep
+the in-flight backlog got by the time a given response was read, not
+round-trip time — it comes out roughly 1000x the unary p50 for identical
+work, which would misrepresent the transport rather than describe it. Only
+aggregate throughput is a meaningful number for this benchmark shape; a
+production caller wanting real per-message latency under streaming would need
+to bound the pipeline depth (a semaphore capping in-flight messages) rather
+than let it run unbounded, which is out of scope for this comparison.
 
 ## Consequences
 
