@@ -8,11 +8,11 @@ import (
 
 	"go.uber.org/zap"
 
-	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/grpcgen/mailer/v1"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 	workermailer "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
+	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/proto/mailer/v1"
 )
 
 // Deliverer sends one delivery message. Satisfied by *workermailer.Mailer; the

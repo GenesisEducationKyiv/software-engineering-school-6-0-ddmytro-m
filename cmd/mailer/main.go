@@ -13,13 +13,13 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/grpcgen/mailer/v1"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	grpcmailer "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/grpc/mailer"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
+	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/proto/mailer/v1"
 )
 
 func main() {
