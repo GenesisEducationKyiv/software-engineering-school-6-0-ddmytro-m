@@ -14,7 +14,6 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/eventpublisher"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
@@ -85,9 +84,8 @@ func main() {
 	}()
 
 	pub := rabbitmq.NewPublisher(rmqConn)
-	eventPub := eventpublisher.New(pub)
 
-	scn := scanner.NewScanner(orm, ghClient, eventPub, rateLimitTransport, &cfg.Scanner)
+	scn := scanner.NewScanner(orm, ghClient, rateLimitTransport, &cfg.Scanner)
 
 	subStore := handlers.NewSubscriptionStore(orm)
 	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient)

@@ -15,7 +15,7 @@ type RepositoryStore interface {
 	ClaimIdle(batchSize int, minInterval time.Duration) ([]db.Repository, error)
 	UpdateScanStatus(repo *db.Repository, events ...outbox.Event) error
 	GetActiveSubscriptions(repoID uint) ([]db.Subscription, error)
-	MarkMovedAndUnsubscribe(repo *db.Repository) error
+	MarkMovedAndUnsubscribe(repo *db.Repository, events ...outbox.Event) error
 }
 
 type gormStore struct {
@@ -89,11 +89,23 @@ func (s *gormStore) GetActiveSubscriptions(repoID uint) ([]db.Subscription, erro
 	return subs, err
 }
 
-func (s *gormStore) MarkMovedAndUnsubscribe(repo *db.Repository) error {
-	if err := s.db.Model(&db.Subscription{}).
+func (s *gormStore) MarkMovedAndUnsubscribe(repo *db.Repository, events ...outbox.Event) error {
+	if len(events) == 0 {
+		return s.markMovedAndUnsubscribe(s.db, repo)
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.markMovedAndUnsubscribe(tx, repo); err != nil {
+			return err
+		}
+		return outbox.InsertTx(tx, events...)
+	})
+}
+
+func (s *gormStore) markMovedAndUnsubscribe(tx *gorm.DB, repo *db.Repository) error {
+	if err := tx.Model(&db.Subscription{}).
 		Where("repository_id = ?", repo.ID).
 		Update("status", db.StatusUnsubscribed).Error; err != nil {
 		return err
 	}
-	return s.db.Delete(repo).Error
+	return tx.Delete(repo).Error
 }

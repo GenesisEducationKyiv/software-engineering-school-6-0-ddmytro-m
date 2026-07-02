@@ -18,19 +18,17 @@ type RepoProcessor interface {
 }
 
 type domainRepoProcessor struct {
-	store    RepositoryStore
-	gh       *github.Client
-	notifier Notifier
-	quota    QuotaManager
+	store RepositoryStore
+	gh    *github.Client
+	quota QuotaManager
 }
 
 // NewRepoProcessor creates a new RepoProcessor.
-func NewRepoProcessor(store RepositoryStore, gh *github.Client, notifier Notifier, quota QuotaManager) RepoProcessor {
+func NewRepoProcessor(store RepositoryStore, gh *github.Client, quota QuotaManager) RepoProcessor {
 	return &domainRepoProcessor{
-		store:    store,
-		gh:       gh,
-		notifier: notifier,
-		quota:    quota,
+		store: store,
+		gh:    gh,
+		quota: quota,
 	}
 }
 
@@ -127,6 +125,9 @@ func (p *domainRepoProcessor) handleNewRelease(repo *db.Repository, latestReleas
 	return outboxEvents
 }
 
+// handleRepoMoved builds one repository.moved outbox event per active
+// subscriber and persists them in the same transaction as the unsubscribe,
+// so a subscriber is never unsubscribed without a durably queued notice.
 func (p *domainRepoProcessor) handleRepoMoved(repo *db.Repository) {
 	subs, err := p.store.GetActiveSubscriptions(repo.ID)
 	if err != nil {
@@ -134,13 +135,20 @@ func (p *domainRepoProcessor) handleRepoMoved(repo *db.Repository) {
 		return
 	}
 
+	outboxEvents := make([]outbox.Event, 0, len(subs))
 	for _, sub := range subs {
-		if err := p.notifier.SendRepoMoved(&sub, repo); err != nil {
-			logger.Log.Error("failed to notify subscriber", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
+		ev, err := outbox.New(events.NewRepositoryMoved(events.RepositoryMoved{
+			Email: sub.Email,
+			Repo:  repo.Owner + "/" + repo.Name,
+		}))
+		if err != nil {
+			logger.Log.Error("failed to build repo-moved notification event", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
+			continue
 		}
+		outboxEvents = append(outboxEvents, ev)
 	}
 
-	if err := p.store.MarkMovedAndUnsubscribe(repo); err != nil {
+	if err := p.store.MarkMovedAndUnsubscribe(repo, outboxEvents...); err != nil {
 		logger.Log.Error("failed to handle db updates for moved repo", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 	}
 }
