@@ -133,6 +133,16 @@ func attempts(d amqp.Delivery) int64 {
 	return 0
 }
 
+// nackRequeue nacks a delivery with requeue so the broker redelivers it,
+// instead of leaving it unacked and stuck in-flight until the connection
+// drops. Used on failure paths where we couldn't durably move the message
+// forward (republish to a retry tier, or to the DLQ).
+func nackRequeue(d amqp.Delivery) {
+	if err := d.Nack(false, true); err != nil {
+		logger.Log.Error("rabbitmq consumer: nack failed", zap.Error(err))
+	}
+}
+
 // Retry republishes the message to the backoff tier matching its attempt count
 // with an incremented x-attempts header, then acks the original. Once attempts
 // exceed the configured tiers it calls DeadLetter instead.
@@ -147,6 +157,7 @@ func (c *Consumer) Retry(ctx context.Context, d amqp.Delivery, reason string) {
 	ch, err := c.conn.Channel()
 	if err != nil {
 		logger.Log.Error("rabbitmq consumer: retry: open channel failed", zap.Error(err))
+		nackRequeue(d)
 		return
 	}
 	defer func() {
@@ -167,6 +178,7 @@ func (c *Consumer) Retry(ctx context.Context, d amqp.Delivery, reason string) {
 		CorrelationId: d.CorrelationId,
 	}); pubErr != nil {
 		logger.Log.Error("rabbitmq consumer: retry: publish failed", zap.Error(pubErr), zap.Int64("attempt", att))
+		nackRequeue(d)
 		return
 	}
 
@@ -187,6 +199,7 @@ func (c *Consumer) DeadLetter(ctx context.Context, d amqp.Delivery, reason strin
 	ch, err := c.conn.Channel()
 	if err != nil {
 		logger.Log.Error("rabbitmq consumer: dead-letter: open channel failed", zap.Error(err))
+		nackRequeue(d)
 		return
 	}
 	defer func() {
@@ -206,6 +219,7 @@ func (c *Consumer) DeadLetter(ctx context.Context, d amqp.Delivery, reason strin
 		Headers:      headers,
 	}); pubErr != nil {
 		logger.Log.Error("rabbitmq consumer: dead-letter: publish failed", zap.Error(pubErr))
+		nackRequeue(d)
 		return
 	}
 
