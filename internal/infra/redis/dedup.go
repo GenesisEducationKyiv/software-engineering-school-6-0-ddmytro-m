@@ -8,7 +8,11 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// Dedup records keys with a TTL for idempotent processing.
+// Dedup records keys with a TTL for idempotent processing. It is best-effort,
+// not a source of truth: TTL'd keys can be lost on a Redis restart, which is
+// acceptable because the outbox (see internal/infra/outbox) already makes
+// event delivery at-least-once, so downstream consumers must tolerate rare
+// duplicates regardless.
 type Dedup struct {
 	client *goredis.Client
 	ttl    time.Duration
