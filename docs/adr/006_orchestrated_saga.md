@@ -119,12 +119,40 @@ against a late `verification.failed`), the active subscription is left untouched
 A user whose verification failed simply re-subscribes, which the handler already
 supports for any non-active record.
 
+### Compensation timeout (the reaper)
+
+A saga has no automatic path forward if the thing that would settle it is
+lost: the `subscription.created` event (before the outbox existed) or, still
+today, a `verification.delivered`/`verification.failed` result (see "Out of
+scope" below). Left alone, such a saga sits in `awaiting_delivery` forever,
+and so does its `pending` subscription.
+
+`orchestrator.Reaper` (`internal/worker/orchestrator/reaper.go`) closes that
+gap with a periodic sweep, run alongside the orchestrator's consumer in
+`cmd/server`: every `SAGA_REAPER_POLL_INTERVAL_SECONDS` (default 300s) it
+finds sagas still `awaiting_delivery` after `SAGA_STALE_AFTER_SECONDS`
+(default 1800s) and runs the same `Compensate` used for an explicit
+`verification.failed` — cancel the still-pending subscription, mark the saga
+compensated. `StaleAfter` is deliberately generous: it must comfortably
+outlast the RabbitMQ retry/DLQ tiers (ADR 005) and the mailer's in-process
+SMTP retries, so the reaper only ever acts on sagas that are genuinely stuck,
+not ones merely running slow.
+
+This introduces one accepted race: if a `verification.delivered` result is
+merely delayed rather than lost, and arrives after the reaper has already
+compensated the saga, `claim()` sees a terminal state and acks without
+re-acting — the delayed "delivered" signal is dropped, and a subscription
+that did in fact get its verification email ends up cancelled anyway. The
+`StaleAfter` default is sized to make this rare; a user who hits it can
+simply re-subscribe, the same recovery path as an ordinary compensation.
+
 ### Properties the implementation must guarantee
 
 - **Idempotency.** Broker delivery is at-least-once, so result events may be
   redelivered. Settlement keys on the persisted saga state (terminal sagas are
   acked without re-acting) and compensation is naturally idempotent (soft-delete
-  only a still-pending row).
+  only a still-pending row) - which also makes it safe for the reaper and a
+  late result event to race on the same token.
 - **Semantic compensation.** C1 is not a physical rollback; it is a new local
   transaction that returns the data to a consistent state.
 - **Commit point.** Once T1/T2 commit we are *in* the saga: it ends in
@@ -132,10 +160,13 @@ supports for any non-active record.
 
 ### Out of scope (deliberate)
 
-- **Transactional outbox.** As ADR 005 already notes, a publish can be lost
-  between the DB write and the broker. If a result event is lost the saga simply
-  stays `awaiting_delivery`; the subscription stays pending and the user can
-  re-subscribe. A full outbox remains future work.
+- **Outbox coverage for the result events.** The transactional outbox now
+  covers saga-*start* (see above), but `verification.delivered`/
+  `verification.failed` are still published directly by the mailer, not
+  through an outbox of its own. If a result event is lost the saga stays
+  `awaiting_delivery` until the reaper (see above) compensates it on a
+  timeout, rather than being reconciled immediately. Giving the mailer its
+  own outbox remains future work.
 - **Saga for release notifications.** The scanner has the same shape (advance
   `Repository.LastRelease` only once delivery is acknowledged, otherwise revert
   so the next scan retries). The subscribe flow is implemented first because it
@@ -149,7 +180,9 @@ supports for any non-active record.
   consistent outcome across Postgres and SMTP — no 2PC, no shared database,
   preserving the service autonomy of ADR 004/005.
 - **No orphaned state.** Compensation guarantees the system lands in `completed`
-  or `compensated`; no permanently-stuck `pending` subscriptions.
+  or `compensated`; no permanently-stuck `pending` subscriptions - including
+  when the thing that would settle a saga is itself lost, thanks to the
+  reaper's timeout-based compensation.
 - **Loose coupling preserved.** Services still communicate only through broker
   contracts; the saga adds two result events on the existing events exchange, not
   a synchronous call, so every service keeps its independent lifecycle.
@@ -165,8 +198,12 @@ supports for any non-active record.
 
 - **Eventual, not immediate, consistency** — a window exists where the
   subscription row exists but the delivery outcome is unknown.
-- **More moving parts** — a saga table, two result events, and an orchestrator
-  consumer to maintain and monitor.
+- **More moving parts** — a saga table, two result events, an orchestrator
+  consumer, and a reaper sweep to maintain and monitor.
+- **Timeout-based compensation can race a delayed (not lost) result.** See
+  "Compensation timeout" above - a `StaleAfter` that's too short trades false
+  positives (compensating a saga that would have completed on its own) for
+  faster recovery from genuinely lost events.
 - **Verification loses broker-tier retries.** To keep the failure signal
   observable, a verification send that exhausts the mailer's in-process retries
   fails terminally instead of using the broker's tiered retry/DLQ. This is an

@@ -90,8 +90,11 @@ func main() {
 
 	// The orchestrator settles the onboarding saga from the mailer's delivery
 	// results; saga-start happens transactionally alongside the subscription
-	// write and its outbox event (see handlers.SubscriptionRepository).
-	orch := orchestrator.New(orchestrator.NewStore(orm))
+	// write and its outbox event (see handlers.SubscriptionRepository). The
+	// reaper compensates sagas left behind by a lost start event or result.
+	sagaStore := orchestrator.NewStore(orm)
+	orch := orchestrator.New(sagaStore)
+	reaper := orchestrator.NewReaper(sagaStore, cfg.Saga.PollInterval, cfg.Saga.StaleAfter)
 
 	subStore := handlers.NewSubscriptionStore(orm)
 	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient)
@@ -110,6 +113,7 @@ func main() {
 	go scn.Start(ctx)
 	go relay.Run(ctx)
 	go sagaConsumer.Start(ctx)
+	go reaper.Run(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
 			logger.Log.Error("HTTP server error", zap.Error(err))

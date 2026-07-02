@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -25,10 +26,13 @@ type fakeStore struct {
 	completed   []string
 	compensated []string
 	canceled    []string
+	stale       []string
 
-	lookupErr     error
-	markErr       error
-	compensateErr error
+	lookupErr           error
+	markErr             error
+	compensateErr       error
+	compensateFailToken map[string]bool
+	staleErr            error
 }
 
 func newFakeStore() *fakeStore {
@@ -62,10 +66,20 @@ func (f *fakeStore) Compensate(token string) error {
 	if f.compensateErr != nil {
 		return f.compensateErr
 	}
+	if f.compensateFailToken[token] {
+		return errors.New("compensate failed for " + token)
+	}
 	f.canceled = append(f.canceled, token)
 	f.compensated = append(f.compensated, token)
 	f.states[token] = db.SagaCompensated
 	return nil
+}
+
+func (f *fakeStore) StaleAwaitingTokens(_ time.Duration) ([]string, error) {
+	if f.staleErr != nil {
+		return nil, f.staleErr
+	}
+	return f.stale, nil
 }
 
 type fakeSettler struct {

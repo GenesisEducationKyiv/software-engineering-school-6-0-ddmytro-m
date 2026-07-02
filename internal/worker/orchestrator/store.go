@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
@@ -15,6 +17,9 @@ type Store interface {
 	// Compensate cancels the still-pending subscription for token and marks
 	// the saga compensated, atomically.
 	Compensate(token string) error
+	// StaleAwaitingTokens returns confirm tokens of sagas still
+	// awaiting_delivery after olderThan, for the reaper to compensate.
+	StaleAwaitingTokens(olderThan time.Duration) ([]string, error)
 }
 
 type gormStore struct {
@@ -56,4 +61,15 @@ func (s *gormStore) Compensate(token string) error {
 			Where("confirm_token = ?", token).
 			Update("state", db.SagaCompensated).Error
 	})
+}
+
+// StaleAwaitingTokens returns confirm tokens of sagas that have sat in
+// awaiting_delivery since before olderThan ago - i.e. the saga-start or the
+// mailer's result event was lost.
+func (s *gormStore) StaleAwaitingTokens(olderThan time.Duration) ([]string, error) {
+	var tokens []string
+	err := s.db.Model(&db.OnboardingSaga{}).
+		Where("state = ? AND created_at < ?", db.SagaAwaitingDelivery, time.Now().Add(-olderThan)).
+		Pluck("confirm_token", &tokens).Error
+	return tokens, err
 }
