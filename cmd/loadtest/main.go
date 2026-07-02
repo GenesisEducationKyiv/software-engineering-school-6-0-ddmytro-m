@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -104,6 +106,8 @@ func run() error {
 		*warmup = maxWarmup
 	}
 
+	printHeader(*n, *warmup)
+
 	switch *transport {
 	case "grpc":
 		return runGRPC(ctx, *n, *warmup, *stream)
@@ -112,6 +116,34 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown transport %q", *transport)
 	}
+}
+
+// printHeader writes a comment header identifying the run: when, with what
+// parameters, and on what hardware - so a saved log's numbers can be judged
+// in context (e.g. a faster CPU or fewer cores would shift throughput) later.
+func printHeader(n, warmup int) {
+	fmt.Printf("# loadtest results  %s  n=%d warmup=%d\n", time.Now().UTC().Format(time.RFC3339), n, warmup)
+	fmt.Printf("# go %s  host=%s  cpu=%q (%d cores)\n", runtime.Version(), runtime.GOARCH, cpuModel(), runtime.NumCPU())
+}
+
+// cpuModel returns a best-effort CPU model string. Linux exposes it via
+// /proc/cpuinfo; other platforms have no portable stdlib equivalent, so they
+// fall back to a generic label rather than shelling out to a platform tool.
+func cpuModel() string {
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return "unknown"
+	}
+	for line := range strings.Lines(string(data)) {
+		rest, found := strings.CutPrefix(line, "model name")
+		if !found {
+			continue
+		}
+		if _, value, ok := strings.Cut(rest, ":"); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return "unknown"
 }
 
 // report prints a throughput summary.
