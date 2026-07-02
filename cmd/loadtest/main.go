@@ -48,19 +48,34 @@ type noopSender struct{}
 
 func (noopSender) SendEmail(context.Context, string, string, string) error { return nil }
 
-// countingSender signals once it has accepted target messages; used to know
-// when the AMQP consumer has drained the published batch.
+// countingSender counts accepted messages so the harness can wait for a
+// batch to drain without a fixed target fixed up front at construction time -
+// letting the same sender/consumer pair serve both the warm-up phase and the
+// timed phase back to back.
 type countingSender struct {
-	count  atomic.Int64
-	target int64
-	done   chan struct{}
+	count atomic.Int64
 }
 
 func (s *countingSender) SendEmail(context.Context, string, string, string) error {
-	if s.count.Add(1) == s.target {
-		close(s.done)
-	}
+	s.count.Add(1)
 	return nil
+}
+
+// waitForCount blocks until counted reaches at least want, or returns an
+// error once timeout has elapsed.
+func waitForCount(ctx context.Context, counted *atomic.Int64, want int64, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if counted.Load() >= want {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("timed out: only %d/%d consumed", counted.Load(), want)
 }
 
 func main() {
@@ -73,6 +88,7 @@ func main() {
 func run() error {
 	transport := flag.String("transport", "grpc", "transport to benchmark: grpc | amqp")
 	n := flag.Int("n", 10000, "number of delivery commands to send")
+	warmup := flag.Int("warmup", 1000, "untimed messages sent before measuring, to prime connections/caches past cold-start; capped at n/10")
 	stream := flag.Bool("stream", false, "grpc only: use the bidi SendStream RPC")
 	rabbitURL := flag.String("rabbitmq-url", "amqp://guest:guest@localhost:5672/", "amqp only: broker URL")
 	flag.Parse()
@@ -82,11 +98,17 @@ func run() error {
 
 	ctx := context.Background()
 
+	// Cap warm-up relative to n so a small -n run (e.g. a quick smoke test)
+	// doesn't spend most of its time warming up.
+	if maxWarmup := *n / 10; *warmup > maxWarmup {
+		*warmup = maxWarmup
+	}
+
 	switch *transport {
 	case "grpc":
-		return runGRPC(ctx, *n, *stream)
+		return runGRPC(ctx, *n, *warmup, *stream)
 	case "amqp":
-		return runAMQP(ctx, *rabbitURL, *n)
+		return runAMQP(ctx, *rabbitURL, *n, *warmup)
 	default:
 		return fmt.Errorf("unknown transport %q", *transport)
 	}
@@ -109,7 +131,7 @@ func percentile(sorted []time.Duration, q float64) time.Duration {
 }
 
 // runGRPC benchmarks the gRPC transport with an in-process server.
-func runGRPC(ctx context.Context, n int, stream bool) error {
+func runGRPC(ctx context.Context, n, warmup int, stream bool) error {
 	mlr := mailer.New(noopSender{}, nil)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -122,7 +144,7 @@ func runGRPC(ctx context.Context, n int, stream bool) error {
 	defer srv.Stop()
 
 	if stream {
-		return runGRPCStream(ctx, lis.Addr().String(), n)
+		return runGRPCStream(ctx, lis.Addr().String(), n, warmup)
 	}
 
 	client, err := grpcmailer.Dial(lis.Addr().String())
@@ -130,6 +152,12 @@ func runGRPC(ctx context.Context, n int, stream bool) error {
 		return err
 	}
 	defer func() { _ = client.Close() }()
+
+	for range warmup {
+		if pubErr := client.Publish(ctx, sampleCommand); pubErr != nil {
+			return fmt.Errorf("warm-up: %w", pubErr)
+		}
+	}
 
 	latencies := make([]time.Duration, 0, n)
 	start := time.Now()
@@ -158,7 +186,7 @@ func runGRPC(ctx context.Context, n int, stream bool) error {
 // in-flight backlog got, not round-trip time (confirmed experimentally - it
 // comes out ~1000x the unary p50 for identical work). Only aggregate
 // throughput is a meaningful number for this shape of benchmark.
-func runGRPCStream(ctx context.Context, addr string, n int) error {
+func runGRPCStream(ctx context.Context, addr string, n, warmup int) error {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err
@@ -170,6 +198,17 @@ func runGRPCStream(ctx context.Context, addr string, n int) error {
 		return err
 	}
 	cmd := protoSample()
+
+	// Synchronous ping-pong is fine for warm-up: it's untimed, and simpler
+	// than reasoning about a pipelined warm-up phase.
+	for range warmup {
+		if sendErr := stream.Send(cmd); sendErr != nil {
+			return fmt.Errorf("warm-up: %w", sendErr)
+		}
+		if _, recvErr := stream.Recv(); recvErr != nil {
+			return fmt.Errorf("warm-up: %w", recvErr)
+		}
+	}
 
 	sendDone := make(chan error, 1)
 
@@ -198,7 +237,7 @@ func runGRPCStream(ctx context.Context, addr string, n int) error {
 
 // runAMQP benchmarks the broker path by draining a published batch through a
 // real mailer consumer with a counting sender.
-func runAMQP(ctx context.Context, url string, n int) error {
+func runAMQP(ctx context.Context, url string, n, warmup int) error {
 	retry := rabbitmq.NewRetryPolicy(30*time.Second, 2, 5)
 	conn := rabbitmq.Dial(url, retry)
 	defer func() { _ = conn.Close() }()
@@ -211,7 +250,7 @@ func runAMQP(ctx context.Context, url string, n int) error {
 		return declErr
 	}
 
-	sender := &countingSender{target: int64(n), done: make(chan struct{})}
+	sender := &countingSender{}
 	mlr := mailer.New(sender, nil)
 	consumer := rabbitmq.NewConsumer(conn, rabbitmq.QueueSet{Main: queue}, 50, retry, mlr.Handler())
 
@@ -220,17 +259,30 @@ func runAMQP(ctx context.Context, url string, n int) error {
 	go consumer.Start(consumeCtx)
 
 	publisher := rabbitmq.NewPublisher(conn)
-	start := time.Now()
-	for range n {
-		if pubErr := publisher.Publish(ctx, rabbitmq.CommandsExchange, routingKey, sampleCommand); pubErr != nil {
-			return pubErr
+	publishBatch := func(count int) error {
+		for range count {
+			if pubErr := publisher.Publish(ctx, rabbitmq.CommandsExchange, routingKey, sampleCommand); pubErr != nil {
+				return pubErr
+			}
+		}
+		return nil
+	}
+
+	if warmup > 0 {
+		if err := publishBatch(warmup); err != nil {
+			return fmt.Errorf("warm-up: %w", err)
+		}
+		if err := waitForCount(ctx, &sender.count, int64(warmup), 2*time.Minute); err != nil {
+			return fmt.Errorf("warm-up: %w", err)
 		}
 	}
 
-	select {
-	case <-sender.done:
-	case <-time.After(2 * time.Minute):
-		return fmt.Errorf("timed out: only %d/%d consumed", sender.count.Load(), n)
+	start := time.Now()
+	if err := publishBatch(n); err != nil {
+		return err
+	}
+	if err := waitForCount(ctx, &sender.count, int64(warmup+n), 2*time.Minute); err != nil {
+		return err
 	}
 	report("amqp", n, time.Since(start), nil)
 	return nil
