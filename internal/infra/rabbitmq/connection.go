@@ -29,7 +29,7 @@ type Connection struct {
 }
 
 // Dial opens the initial connection with blocking retry and returns a Connection.
-func Dial(url string, retry RetryPolicy) (*Connection, error) {
+func Dial(url string, retry RetryPolicy) *Connection {
 	c := &Connection{
 		url:   url,
 		retry: retry,
@@ -38,7 +38,7 @@ func Dial(url string, retry RetryPolicy) (*Connection, error) {
 	c.connect()
 
 	go c.watchAndReconnect()
-	return c, nil
+	return c
 }
 
 // connect blocks until a connection is established and the topology is

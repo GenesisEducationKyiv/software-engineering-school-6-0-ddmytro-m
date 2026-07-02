@@ -96,10 +96,7 @@ func startRedis(ctx context.Context) (testcontainers.Container, *goredis.Client,
 func startNotifier(ctx context.Context, t *testing.T) *rabbitmq.Connection {
 	t.Helper()
 	retry := rabbitmq.NewRetryPolicy(time.Second, 2, 3)
-	conn, err := rabbitmq.Dial(testAMQPURL, retry)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	conn := rabbitmq.Dial(testAMQPURL, retry)
 	purge(t, conn)
 	testRedis.FlushAll(ctx)
 

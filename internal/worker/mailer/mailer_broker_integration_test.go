@@ -83,10 +83,7 @@ func startMailer(ctx context.Context, t *testing.T, sender EmailSender) (*rabbit
 	t.Helper()
 	retry := rabbitmq.NewRetryPolicy(time.Second, 2, 3)
 
-	conn, err := rabbitmq.Dial(testAMQPURL, retry)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
+	conn := rabbitmq.Dial(testAMQPURL, retry)
 	purgeQueues(t, conn)
 
 	consumer := rabbitmq.NewConsumer(conn, rabbitmq.CommandsEndpoint.Queues, 1, retry, New(sender).Handler())

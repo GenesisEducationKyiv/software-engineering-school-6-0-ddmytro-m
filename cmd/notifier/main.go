@@ -44,10 +44,7 @@ func main() {
 		cfg.RabbitMQ.MaxRetryAttempts,
 	)
 
-	conn, err := rabbitmq.Dial(cfg.RabbitMQ.URL, retryPolicy)
-	if err != nil {
-		logger.Log.Fatal("failed to connect to RabbitMQ", zap.Error(err))
-	}
+	conn := rabbitmq.Dial(cfg.RabbitMQ.URL, retryPolicy)
 	defer func() {
 		if closeErr := conn.Close(); closeErr != nil {
 			logger.Log.Error("error closing RabbitMQ connection", zap.Error(closeErr))
