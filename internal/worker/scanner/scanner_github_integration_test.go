@@ -4,10 +4,12 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -17,7 +19,9 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/events"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -129,17 +133,51 @@ func setupPostgresContainer(ctx context.Context) (testcontainers.Container, *gor
 		return nil, nil, err
 	}
 
-	err = orm.AutoMigrate(&db.Repository{}, &db.Subscription{})
+	err = orm.AutoMigrate(&db.Repository{}, &db.Subscription{}, &outbox.Row{})
 
 	return pgc, orm, err
 }
 
 func getCleanDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	if err := testDB.Exec("TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY CASCADE").Error; err != nil {
+	if err := testDB.Exec("TRUNCATE TABLE subscriptions, repositories, outbox_rows RESTART IDENTITY CASCADE").Error; err != nil {
 		t.Fatalf("failed to truncate db: %v", err)
 	}
 	return testDB
+}
+
+// outboxReleaseNotifications reads the persisted release.detected outbox
+// rows and decodes them into notifyCall for assertions.
+func outboxReleaseNotifications(t *testing.T, orm *gorm.DB) []notifyCall {
+	t.Helper()
+	var rows []outbox.Row
+	if err := orm.Where("routing_key = ?", string(events.TypeReleaseDetected)).Find(&rows).Error; err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
+	calls := make([]notifyCall, 0, len(rows))
+	for _, row := range rows {
+		calls = append(calls, decodeReleaseDetectedRow(t, row))
+	}
+	return calls
+}
+
+func decodeReleaseDetectedRow(t *testing.T, row outbox.Row) notifyCall {
+	t.Helper()
+	var env events.Envelope
+	if err := json.Unmarshal(row.Payload, &env); err != nil {
+		t.Fatalf("decode outbox envelope: %v", err)
+	}
+	return decodeReleaseDetectedEnvelope(t, env)
+}
+
+func decodeReleaseDetectedEnvelope(t *testing.T, env events.Envelope) notifyCall {
+	t.Helper()
+	payload, err := env.DecodeReleaseDetected()
+	if err != nil {
+		t.Fatalf("decode release.detected payload: %v", err)
+	}
+	owner, name, _ := strings.Cut(payload.Repo, "/")
+	return notifyCall{email: payload.Email, owner: owner, name: name, tagName: payload.ReleaseTag}
 }
 
 func newScanner(orm *gorm.DB, ghClient *github.Client, rlp RateLimitProvider, notifier Notifier) *Scanner {
@@ -287,12 +325,13 @@ func TestProcessRepo_NewRelease_NotifiesSubscribersAndPersists(t *testing.T) {
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, rl), notifier)
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	// two notifications — one per active subscriber
-	if len(notifier.releases) != 2 {
-		t.Fatalf("expected 2 notifications, got %d", len(notifier.releases))
+	// two notifications — one per active subscriber, durably queued via the outbox
+	releaseNotifications := outboxReleaseNotifications(t, dbConn)
+	if len(releaseNotifications) != 2 {
+		t.Fatalf("expected 2 notifications, got %d", len(releaseNotifications))
 	}
 	emails := map[string]bool{}
-	for _, c := range notifier.releases {
+	for _, c := range releaseNotifications {
 		emails[c.email] = true
 		if c.tagName != "v1.22.0" {
 			t.Errorf("notification tagName = %q, want v1.22.0", c.tagName)
@@ -357,9 +396,9 @@ func TestProcessRepo_RepoMoved_NotifiesAndUnsubscribes(t *testing.T) {
 		t.Errorf("missing expected recipients: %v", emails)
 	}
 
-	// should NOT trigger SendNewRelease
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 release notifications, got %d", len(notifier.releases))
+	// should NOT queue a release notification
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 release notifications, got %d", len(releaseNotifications))
 	}
 
 	// subscriptions should be marked as unsubscribed
@@ -385,8 +424,8 @@ func TestProcessRepo_304_NoNotificationNoTagChange(t *testing.T) {
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications on 304, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications on 304, got %d", len(releaseNotifications))
 	}
 
 	var updated db.Repository
@@ -412,8 +451,8 @@ func TestProcessRepo_SameTag_NoNotification(t *testing.T) {
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications when tag unchanged, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications when tag unchanged, got %d", len(releaseNotifications))
 	}
 }
 
@@ -440,8 +479,8 @@ func TestProcessRepo_RepoNotFound_SkipsRelease(t *testing.T) {
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications when repo is 404, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications when repo is 404, got %d", len(releaseNotifications))
 	}
 	// subscriptions left intact — repo may just be temporarily private
 	var activeSubs int64
@@ -478,8 +517,8 @@ func TestProcessRepo_RepoCheckRateLimited_FreezesLimiterSkipsRelease(t *testing.
 	if s.quota.Limit() != 0 {
 		t.Errorf("limiter should be frozen (0) after 429 on repo check, got %v", s.quota.Limit())
 	}
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(releaseNotifications))
 	}
 }
 
@@ -568,11 +607,12 @@ func TestProcessRepo_OnlyActiveSubscriptionsNotified(t *testing.T) {
 	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 1 {
-		t.Fatalf("expected 1 notification (active only), got %d", len(notifier.releases))
+	releaseNotifications := outboxReleaseNotifications(t, dbConn)
+	if len(releaseNotifications) != 1 {
+		t.Fatalf("expected 1 notification (active only), got %d", len(releaseNotifications))
 	}
-	if notifier.releases[0].email != "active@example.com" {
-		t.Errorf("notification sent to %q, want active@example.com", notifier.releases[0].email)
+	if releaseNotifications[0].email != "active@example.com" {
+		t.Errorf("notification sent to %q, want active@example.com", releaseNotifications[0].email)
 	}
 }
 
@@ -697,12 +737,13 @@ func TestHandleNewRelease_NotifiesAllActiveSubscribers(t *testing.T) {
 
 	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
 	p := s.processor.(*domainRepoProcessor)
-	p.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
+	outboxEvents := p.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
 
-	if len(notifier.releases) != 2 {
-		t.Fatalf("expected 2 notifications, got %d", len(notifier.releases))
+	if len(outboxEvents) != 2 {
+		t.Fatalf("expected 2 notifications, got %d", len(outboxEvents))
 	}
-	for _, c := range notifier.releases {
+	for _, ev := range outboxEvents {
+		c := decodeReleaseDetectedEnvelope(t, ev.Envelope)
 		if c.tagName != "v6.8" {
 			t.Errorf("notification tagName = %q, want v6.8", c.tagName)
 		}
@@ -831,12 +872,13 @@ func TestScanner_Integration_MultipleSubscribersDifferentRepos(t *testing.T) {
 	s.processor.ProcessRepo(context.Background(), repo1)
 	s.processor.ProcessRepo(context.Background(), repo2)
 
-	if len(notifier.releases) != 4 {
-		t.Fatalf("expected 4 notifications total, got %d", len(notifier.releases))
+	releaseNotifications := outboxReleaseNotifications(t, dbConn)
+	if len(releaseNotifications) != 4 {
+		t.Fatalf("expected 4 notifications total, got %d", len(releaseNotifications))
 	}
 
 	counts := map[string]int{}
-	for _, call := range notifier.releases {
+	for _, call := range releaseNotifications {
 		key := fmt.Sprintf("%s:%s:%s", call.email, call.name, call.tagName)
 		counts[key]++
 	}

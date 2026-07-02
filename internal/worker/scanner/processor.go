@@ -6,7 +6,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/events"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
@@ -33,8 +35,9 @@ func NewRepoProcessor(store RepositoryStore, gh *github.Client, notifier Notifie
 }
 
 func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Repository) {
+	var pending []outbox.Event
 	defer func() {
-		if err := p.store.UpdateScanStatus(repo); err != nil {
+		if err := p.store.UpdateScanStatus(repo, pending...); err != nil {
 			logger.Log.Error("error updating scan status", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
 		}
 	}()
@@ -75,7 +78,7 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 	case 200:
 		if releaseResp.Data.TagName != repo.LastRelease.TagName {
 			logger.Log.Info("new release detected", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.String("tag", releaseResp.Data.TagName))
-			p.handleNewRelease(repo, &releaseResp.Data)
+			pending = p.handleNewRelease(repo, &releaseResp.Data)
 			repo.LastRelease.TagName = releaseResp.Data.TagName
 			repo.LastRelease.GitHubID = releaseResp.Data.ID
 		}
@@ -98,18 +101,30 @@ func (p *domainRepoProcessor) ProcessRepo(ctx context.Context, repo *db.Reposito
 	}
 }
 
-func (p *domainRepoProcessor) handleNewRelease(repo *db.Repository, latestRelease *github.LatestRelease) {
+// handleNewRelease builds one release.detected outbox event per active
+// subscriber. The caller persists them atomically with the release state
+// update so a notification is never lost to a broker outage.
+func (p *domainRepoProcessor) handleNewRelease(repo *db.Repository, latestRelease *github.LatestRelease) []outbox.Event {
 	subs, err := p.store.GetActiveSubscriptions(repo.ID)
 	if err != nil {
 		logger.Log.Error("error finding active subscriptions", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
-		return
+		return nil
 	}
 
+	outboxEvents := make([]outbox.Event, 0, len(subs))
 	for _, sub := range subs {
-		if err := p.notifier.SendNewRelease(&sub, repo, latestRelease); err != nil {
-			logger.Log.Error("failed to notify subscriber", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
+		ev, err := outbox.New(events.NewReleaseDetected(events.ReleaseDetected{
+			Email:      sub.Email,
+			Repo:       repo.Owner + "/" + repo.Name,
+			ReleaseTag: latestRelease.TagName,
+		}))
+		if err != nil {
+			logger.Log.Error("failed to build release notification event", zap.String("owner", repo.Owner), zap.String("name", repo.Name), zap.Error(err))
+			continue
 		}
+		outboxEvents = append(outboxEvents, ev)
 	}
+	return outboxEvents
 }
 
 func (p *domainRepoProcessor) handleRepoMoved(repo *db.Repository) {
