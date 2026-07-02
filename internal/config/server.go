@@ -8,6 +8,7 @@ type ServerConfig struct {
 	Scanner  ScannerConfig
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
+	Outbox   OutboxConfig
 }
 
 // LoadServerConfig reads all env vars required by the server service.
@@ -19,5 +20,6 @@ func LoadServerConfig() ServerConfig {
 		Scanner:  LoadScannerConfig(),
 		Redis:    LoadRedisConfig(),
 		RabbitMQ: LoadRabbitMQConfig(),
+		Outbox:   LoadOutboxConfig(),
 	}
 }

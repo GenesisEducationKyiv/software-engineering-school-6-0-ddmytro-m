@@ -12,28 +12,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/events"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
-// EmailSender defines the interface for sending emails.
-type EmailSender interface {
-	SendEmailVerification(email, token string) error
-}
-
 // SubscriptionHandler handles HTTP requests related to subscriptions.
 type SubscriptionHandler struct {
-	store       SubscriptionRepository
-	resolver    RepoResolver
-	emailSender EmailSender
+	store    SubscriptionRepository
+	resolver RepoResolver
 }
 
 // NewSubscriptionHandler creates a new instance of SubscriptionHandler.
-func NewSubscriptionHandler(store SubscriptionRepository, resolver RepoResolver, emailSender EmailSender) *SubscriptionHandler {
+func NewSubscriptionHandler(store SubscriptionRepository, resolver RepoResolver) *SubscriptionHandler {
 	return &SubscriptionHandler{
-		store:       store,
-		resolver:    resolver,
-		emailSender: emailSender,
+		store:    store,
+		resolver: resolver,
 	}
 }
 
@@ -170,12 +165,21 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 	}
 
+	verificationEvent, err := outbox.New(events.NewSubscriptionCreated(events.SubscriptionCreated{
+		Email: req.Email,
+		Token: confirmToken,
+	}))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to build verification event"})
+		return
+	}
+
 	if recordExists {
 		// re-send confirmation for a pending or unsubscribed record.
 		sub.Status = db.StatusPending
 		sub.ConfirmToken = confirmToken
 		sub.APIToken = "" // only issued on confirmation
-		if err := h.store.SaveSubscription(sub); err != nil {
+		if err := h.store.SaveSubscription(sub, verificationEvent); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update subscription"})
 			return
 		}
@@ -187,15 +191,8 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 			ConfirmToken: confirmToken,
 			APIToken:     "",
 		}
-		if err := h.store.CreateSubscription(sub); err != nil {
+		if err := h.store.CreateSubscription(sub, verificationEvent); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription"})
-			return
-		}
-	}
-
-	if h.emailSender != nil {
-		if err := h.emailSender.SendEmailVerification(sub.Email, sub.ConfirmToken); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue verification email"})
 			return
 		}
 	}

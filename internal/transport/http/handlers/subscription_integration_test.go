@@ -24,7 +24,9 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/events"
 	infraDB "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
@@ -77,34 +79,32 @@ func setupPostgresContainer(ctx context.Context) (testcontainers.Container, *gor
 		return nil, nil, err
 	}
 
-	err = orm.AutoMigrate(&infraDB.Repository{}, &infraDB.Subscription{})
+	err = orm.AutoMigrate(&infraDB.Repository{}, &infraDB.Subscription{}, &outbox.Row{})
 
 	return pgc, orm, err
 }
 
 func getCleanDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	testDB.Exec("TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY CASCADE")
+	testDB.Exec("TRUNCATE TABLE subscriptions, repositories, outbox_rows RESTART IDENTITY CASCADE")
 	return testDB
 }
 
-type mockEmailSender struct {
-	sentTokens map[string]string
-	err        error
+// outboxRowFor returns the single outbox row with the given routing key, if any.
+func outboxRowFor(t *testing.T, db *gorm.DB, routingKey string) (outbox.Row, bool) {
+	t.Helper()
+	var row outbox.Row
+	err := db.Where("routing_key = ?", routingKey).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return outbox.Row{}, false
+	}
+	if err != nil {
+		t.Fatalf("query outbox row: %v", err)
+	}
+	return row, true
 }
 
-func (m *mockEmailSender) SendEmailVerification(email, token string) error {
-	if m.err != nil {
-		return m.err
-	}
-	if m.sentTokens == nil {
-		m.sentTokens = make(map[string]string)
-	}
-	m.sentTokens[email] = token
-	return nil
-}
-
-func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server, *mockEmailSender) {
+func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -124,12 +124,11 @@ func setupTestEnv(t *testing.T, db *gorm.DB) (*gin.Engine, *httptest.Server, *mo
 	)
 
 	r := gin.Default()
-	emailSender := &mockEmailSender{sentTokens: make(map[string]string)}
 	store := NewSubscriptionStore(db)
-	handler := NewSubscriptionHandler(store, ghClient, emailSender)
+	handler := NewSubscriptionHandler(store, ghClient)
 	handler.RegisterRoutes(r.Group("/"))
 
-	return r, ghServer, emailSender
+	return r, ghServer
 }
 
 func performRequest(r http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
@@ -144,7 +143,7 @@ func performRequest(r http.Handler, method, path string, body []byte, headers ma
 
 func TestSubscribe_Success(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, emailSender := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	testEmail := "user@example.com"
@@ -159,14 +158,28 @@ func TestSubscribe_Success(t *testing.T) {
 	var sub infraDB.Subscription
 	db.First(&sub, "email = ?", testEmail)
 
-	if token, ok := emailSender.sentTokens[testEmail]; !ok || token != sub.ConfirmToken {
-		t.Fatalf("expected email verification to be sent with token %s, got %s", sub.ConfirmToken, token)
+	// the verification event must be durably queued in the same transaction
+	// as the subscription write, not fired-and-forgotten to the broker.
+	row, ok := outboxRowFor(t, db, string(events.TypeSubscriptionCreated))
+	if !ok {
+		t.Fatal("expected a subscription.created outbox row, found none")
+	}
+	var env events.Envelope
+	if err := json.Unmarshal(row.Payload, &env); err != nil {
+		t.Fatalf("decode outbox envelope: %v", err)
+	}
+	payload, err := env.DecodeSubscriptionCreated()
+	if err != nil {
+		t.Fatalf("decode subscription.created payload: %v", err)
+	}
+	if payload.Email != testEmail || payload.Token != sub.ConfirmToken {
+		t.Fatalf("expected outbox event for %s with token %s, got %+v", testEmail, sub.ConfirmToken, payload)
 	}
 }
 
 func TestConfirm_Success(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
@@ -199,7 +212,7 @@ func TestConfirm_Success(t *testing.T) {
 
 func TestGetSubscriptions_Success(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
@@ -236,7 +249,7 @@ func TestGetSubscriptions_Success(t *testing.T) {
 
 func TestUnsubscribe_Success(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
@@ -267,7 +280,7 @@ func TestUnsubscribe_Success(t *testing.T) {
 
 func TestSubscribe_InvalidInputs(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	tests := []struct {
@@ -294,7 +307,7 @@ func TestSubscribe_InvalidInputs(t *testing.T) {
 
 func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	// Seed DB with an active subscription
@@ -314,24 +327,9 @@ func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	}
 }
 
-func TestSubscribe_EmailSenderError(t *testing.T) {
-	db := getCleanDB(t)
-	router, ghServer, emailSender := setupTestEnv(t, db)
-	defer ghServer.Close()
-
-	emailSender.err = errors.New("queue error")
-
-	body, _ := json.Marshal(SubscribeRequest{Email: "user@example.com", Repo: "testowner/testrepo"})
-	w := performRequest(router, http.MethodPost, "/subscribe", body, map[string]string{"Content-Type": "application/json"})
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 Internal Server Error, got %d", w.Code)
-	}
-}
-
 func TestConfirm_InvalidOrMissingToken(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	w := performRequest(router, http.MethodGet, "/confirm/short-token", nil, nil)
@@ -342,7 +340,7 @@ func TestConfirm_InvalidOrMissingToken(t *testing.T) {
 
 func TestConfirm_TokenNotFound(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	validLengthFakeToken := "12345678901234567890123456789012"
@@ -355,7 +353,7 @@ func TestConfirm_TokenNotFound(t *testing.T) {
 
 func TestConfirm_Idempotency(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	// Seed DB with a pending subscription
@@ -394,7 +392,7 @@ func TestConfirm_Idempotency(t *testing.T) {
 
 func TestUnsubscribe_MissingAuth(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	validLengthFakeToken := "12345678901234567890123456789012"
@@ -407,7 +405,7 @@ func TestUnsubscribe_MissingAuth(t *testing.T) {
 
 func TestUnsubscribe_WrongApiToken(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	confirmToken := "aaaaabbbbbcccccdddddeeeeefffff11"
@@ -432,7 +430,7 @@ func TestUnsubscribe_WrongApiToken(t *testing.T) {
 
 func TestUnsubscribe_Idempotency(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	repo := infraDB.Repository{Owner: "testowner", Name: "testrepo", GitHubID: 12345}
@@ -472,7 +470,7 @@ func TestUnsubscribe_Idempotency(t *testing.T) {
 
 func TestGetSubscriptions_MissingEmailParam(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	validApiToken := "11111222223333344444555556666677"
@@ -487,7 +485,7 @@ func TestGetSubscriptions_MissingEmailParam(t *testing.T) {
 
 func TestGetSubscriptions_Unauthorized(t *testing.T) {
 	db := getCleanDB(t)
-	router, ghServer, _ := setupTestEnv(t, db)
+	router, ghServer := setupTestEnv(t, db)
 	defer ghServer.Close()
 
 	db.Create(&infraDB.Subscription{

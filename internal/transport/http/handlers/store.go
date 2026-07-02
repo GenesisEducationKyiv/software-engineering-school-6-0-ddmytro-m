@@ -7,6 +7,7 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 )
 
 // SubscriptionRepository defines data access methods for the subscription handler.
@@ -17,8 +18,8 @@ type SubscriptionRepository interface {
 	CreateRepo(repo *db.Repository) error
 	FindSubscription(email string, repoID uint) (*db.Subscription, error)
 	IsConfirmTokenTaken(token string) (bool, error)
-	SaveSubscription(sub *db.Subscription) error
-	CreateSubscription(sub *db.Subscription) error
+	SaveSubscription(sub *db.Subscription, events ...outbox.Event) error
+	CreateSubscription(sub *db.Subscription, events ...outbox.Event) error
 	FindSubscriptionByConfirmToken(token string) (*db.Subscription, error)
 	FindSubscriptionByTokens(confirmToken, apiToken string) (*db.Subscription, error)
 	FindSubscriptionByEmailAndToken(email, apiToken string) (*db.Subscription, error)
@@ -80,12 +81,28 @@ func (s *gormSubscriptionStore) IsConfirmTokenTaken(token string) (bool, error) 
 	return count > 0, nil
 }
 
-func (s *gormSubscriptionStore) SaveSubscription(sub *db.Subscription) error {
-	return s.db.Save(sub).Error
+func (s *gormSubscriptionStore) SaveSubscription(sub *db.Subscription, events ...outbox.Event) error {
+	if len(events) == 0 {
+		return s.db.Save(sub).Error
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(sub).Error; err != nil {
+			return err
+		}
+		return outbox.InsertTx(tx, events...)
+	})
 }
 
-func (s *gormSubscriptionStore) CreateSubscription(sub *db.Subscription) error {
-	return s.db.Create(sub).Error
+func (s *gormSubscriptionStore) CreateSubscription(sub *db.Subscription, events ...outbox.Event) error {
+	if len(events) == 0 {
+		return s.db.Create(sub).Error
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(sub).Error; err != nil {
+			return err
+		}
+		return outbox.InsertTx(tx, events...)
+	})
 }
 
 func (s *gormSubscriptionStore) FindSubscriptionByConfirmToken(token string) (*db.Subscription, error) {

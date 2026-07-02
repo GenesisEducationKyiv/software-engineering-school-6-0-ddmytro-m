@@ -15,6 +15,7 @@ import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/eventpublisher"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
@@ -83,15 +84,19 @@ func main() {
 		}
 	}()
 
-	eventPub := eventpublisher.New(rabbitmq.NewPublisher(rmqConn))
+	pub := rabbitmq.NewPublisher(rmqConn)
+	eventPub := eventpublisher.New(pub)
 
 	scn := scanner.NewScanner(orm, ghClient, eventPub, rateLimitTransport, &cfg.Scanner)
 
 	subStore := handlers.NewSubscriptionStore(orm)
-	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, eventPub)
+	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
+	relay := outbox.NewRelay(orm, pub, cfg.Outbox.PollInterval, cfg.Outbox.BatchSize)
+
 	go scn.Start(ctx)
+	go relay.Run(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
 			logger.Log.Error("HTTP server error", zap.Error(err))

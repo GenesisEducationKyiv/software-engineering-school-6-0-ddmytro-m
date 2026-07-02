@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
@@ -85,7 +86,7 @@ func Get() *gorm.DB {
 			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
 
-		err = db.AutoMigrate(&Repository{}, &Subscription{})
+		err = db.AutoMigrate(&Repository{}, &Subscription{}, &outbox.Row{})
 		if err != nil {
 			logger.Log.Fatal("failed to migrate database", zap.Error(err))
 		}
