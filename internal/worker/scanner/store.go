@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
@@ -38,7 +39,12 @@ func (s *gormStore) ClaimIdle(batchSize int, minInterval time.Duration) ([]db.Re
 	var repos []db.Repository
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Model(&db.Repository{}).
+		// Lock the candidate rows and skip any already locked by another
+		// producer instance, so concurrent scanners never claim the same repos.
+		err := tx.Clauses(clause.Locking{
+			Strength: clause.LockingStrengthUpdate,
+			Options:  clause.LockingOptionsSkipLocked,
+		}).Model(&db.Repository{}).
 			Select("id").
 			Where("status = ? AND (last_scanned_at IS NULL OR last_scanned_at <= ?)", "idle", time.Now().Add(-minInterval)).
 			Order("last_scanned_at ASC").
