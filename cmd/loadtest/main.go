@@ -144,7 +144,20 @@ func runGRPC(ctx context.Context, n int, stream bool) error {
 	return nil
 }
 
-// runGRPCStream benchmarks the bidi SendStream RPC.
+// runGRPCStream benchmarks the bidi SendStream RPC. Sending and receiving run
+// on separate goroutines so the client pipelines requests instead of waiting
+// for each response before sending the next - the actual advantage bidi
+// streaming has over unary calls (a ping-pong send/recv loop on a stream
+// gains nothing over per-message unary RPCs). grpc-go documents it as safe to
+// call SendMsg and RecvMsg on the same stream from two different goroutines
+// concurrently (just not SendMsg from two goroutines at once), so this split
+// is safe as written.
+//
+// No per-message latency is reported here: with the sender racing ahead
+// unthrottled, recv-time minus send-time mostly measures how deep the
+// in-flight backlog got, not round-trip time (confirmed experimentally - it
+// comes out ~1000x the unary p50 for identical work). Only aggregate
+// throughput is a meaningful number for this shape of benchmark.
 func runGRPCStream(ctx context.Context, addr string, n int) error {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -158,17 +171,26 @@ func runGRPCStream(ctx context.Context, addr string, n int) error {
 	}
 	cmd := protoSample()
 
+	sendDone := make(chan error, 1)
+
 	start := time.Now()
-	for range n {
-		if sendErr := stream.Send(cmd); sendErr != nil {
-			return sendErr
+	go func() {
+		for range n {
+			if sendErr := stream.Send(cmd); sendErr != nil {
+				sendDone <- sendErr
+				return
+			}
 		}
+		sendDone <- stream.CloseSend()
+	}()
+
+	for range n {
 		if _, recvErr := stream.Recv(); recvErr != nil {
 			return recvErr
 		}
 	}
-	if closeErr := stream.CloseSend(); closeErr != nil {
-		return closeErr
+	if sendErr := <-sendDone; sendErr != nil {
+		return sendErr
 	}
 	report("grpc-stream", n, time.Since(start), nil)
 	return nil
