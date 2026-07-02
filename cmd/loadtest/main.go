@@ -51,7 +51,7 @@ type noopSender struct{}
 func (noopSender) SendEmail(context.Context, string, string, string) error { return nil }
 
 // countingSender counts accepted messages so the harness can wait for a
-// batch to drain without a fixed target fixed up front at construction time -
+// batch to drain without a fixed target set up front at construction time -
 // letting the same sender/consumer pair serve both the warm-up phase and the
 // timed phase back to back.
 type countingSender struct {
