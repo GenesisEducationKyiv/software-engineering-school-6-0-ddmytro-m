@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -133,6 +134,36 @@ func attempts(d amqp.Delivery) int64 {
 	return 0
 }
 
+// publishConfirmed publishes pub to queue via the default exchange and waits
+// for a broker confirm before returning, so a caller that then acks the
+// original delivery can trust the republish actually landed rather than
+// being lost to a connection failure right after PublishWithContext returns.
+func publishConfirmed(ctx context.Context, ch *amqp.Channel, queue string, pub amqp.Publishing) error {
+	if err := ch.Confirm(false); err != nil {
+		return fmt.Errorf("enable confirms: %w", err)
+	}
+	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
+
+	if err := ch.PublishWithContext(ctx, "", queue, false, false, pub); err != nil {
+		return fmt.Errorf("publish: %w", err)
+	}
+
+	select {
+	case confirm, ok := <-confirms:
+		if !ok {
+			return fmt.Errorf("confirms channel closed")
+		}
+		if !confirm.Ack {
+			return fmt.Errorf("nack received for queue %s", queue)
+		}
+		return nil
+	case <-time.After(publishConfirmTimeout):
+		return fmt.Errorf("confirm timeout for queue %s", queue)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // nackRequeue nacks a delivery with requeue so the broker redelivers it,
 // instead of leaving it unacked and stuck in-flight until the connection
 // drops. Used on failure paths where we couldn't durably move the message
@@ -170,13 +201,14 @@ func (c *Consumer) Retry(ctx context.Context, d amqp.Delivery, reason string) {
 	maps.Copy(headers, d.Headers)
 	headers[HeaderAttempts] = att
 
-	if pubErr := ch.PublishWithContext(ctx, "", tierQueue, false, false, amqp.Publishing{
+	pub := amqp.Publishing{
 		ContentType:   d.ContentType,
 		DeliveryMode:  amqp.Persistent,
 		Body:          d.Body,
 		Headers:       headers,
 		CorrelationId: d.CorrelationId,
-	}); pubErr != nil {
+	}
+	if pubErr := publishConfirmed(ctx, ch, tierQueue, pub); pubErr != nil {
 		logger.Log.Error("rabbitmq consumer: retry: publish failed", zap.Error(pubErr), zap.Int64("attempt", att))
 		nackRequeue(d)
 		return
@@ -212,12 +244,13 @@ func (c *Consumer) DeadLetter(ctx context.Context, d amqp.Delivery, reason strin
 	maps.Copy(headers, d.Headers)
 	headers[HeaderDLQReason] = reason
 
-	if pubErr := ch.PublishWithContext(ctx, "", c.queues.DLQ, false, false, amqp.Publishing{
+	pub := amqp.Publishing{
 		ContentType:  d.ContentType,
 		DeliveryMode: amqp.Persistent,
 		Body:         d.Body,
 		Headers:      headers,
-	}); pubErr != nil {
+	}
+	if pubErr := publishConfirmed(ctx, ch, c.queues.DLQ, pub); pubErr != nil {
 		logger.Log.Error("rabbitmq consumer: dead-letter: publish failed", zap.Error(pubErr))
 		nackRequeue(d)
 		return
