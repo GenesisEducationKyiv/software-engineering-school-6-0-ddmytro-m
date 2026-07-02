@@ -99,18 +99,15 @@ func (o *Orchestrator) complete(ctx context.Context, token string, s settler) {
 	s.Ack()
 }
 
-// compensate runs C1: cancel the still-pending subscription, then mark the saga
-// compensated. Both steps are idempotent so a redelivery is safe.
+// compensate runs C1: cancel the still-pending subscription and mark the saga
+// compensated, atomically. The whole operation is also idempotent, so a
+// redelivery after a retry is safe.
 func (o *Orchestrator) compensate(ctx context.Context, token string, s settler) {
 	if !o.claim(ctx, token, s) {
 		return
 	}
-	if err := o.store.CancelPendingSubscription(token); err != nil {
-		s.Retry(ctx, "cancel subscription: "+err.Error())
-		return
-	}
-	if err := o.store.MarkCompensated(token); err != nil {
-		s.Retry(ctx, "mark compensated: "+err.Error())
+	if err := o.store.Compensate(token); err != nil {
+		s.Retry(ctx, "compensate: "+err.Error())
 		return
 	}
 	logger.Log.Info("onboarding saga compensated", zap.String("token", token))

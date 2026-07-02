@@ -22,35 +22,17 @@ func init() {
 
 type fakeStore struct {
 	states      map[string]db.SagaState
-	created     []string
-	deleted     []string
 	completed   []string
 	compensated []string
 	canceled    []string
 
-	createErr error
-	lookupErr error
-	markErr   error
-	cancelErr error
+	lookupErr     error
+	markErr       error
+	compensateErr error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{states: map[string]db.SagaState{}}
-}
-
-func (f *fakeStore) CreateSaga(token string) error {
-	if f.createErr != nil {
-		return f.createErr
-	}
-	f.created = append(f.created, token)
-	f.states[token] = db.SagaAwaitingDelivery
-	return nil
-}
-
-func (f *fakeStore) DeleteSaga(token string) error {
-	f.deleted = append(f.deleted, token)
-	delete(f.states, token)
-	return nil
 }
 
 func (f *fakeStore) SagaState(token string) (db.SagaState, error) {
@@ -73,31 +55,17 @@ func (f *fakeStore) MarkCompleted(token string) error {
 	return nil
 }
 
-func (f *fakeStore) MarkCompensated(token string) error {
-	if f.markErr != nil {
-		return f.markErr
+// Compensate mimics the atomic cancel-subscription + mark-compensated store
+// method: on failure, neither list is updated, matching the real
+// implementation's all-or-nothing transaction.
+func (f *fakeStore) Compensate(token string) error {
+	if f.compensateErr != nil {
+		return f.compensateErr
 	}
+	f.canceled = append(f.canceled, token)
 	f.compensated = append(f.compensated, token)
 	f.states[token] = db.SagaCompensated
 	return nil
-}
-
-func (f *fakeStore) CancelPendingSubscription(token string) error {
-	if f.cancelErr != nil {
-		return f.cancelErr
-	}
-	f.canceled = append(f.canceled, token)
-	return nil
-}
-
-type fakePublisher struct {
-	tokens []string
-	err    error
-}
-
-func (p *fakePublisher) SendEmailVerification(_ /*email*/, token string) error {
-	p.tokens = append(p.tokens, token)
-	return p.err
 }
 
 type fakeSettler struct {
@@ -121,56 +89,10 @@ func resultBody(env events.Envelope, err error) []byte {
 	return b
 }
 
-func TestSendEmailVerification_StartsSaga(t *testing.T) {
-	store := newFakeStore()
-	pub := &fakePublisher{}
-	o := New(store, pub)
-
-	if err := o.SendEmailVerification("u@example.com", "tok"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(store.created) != 1 || store.created[0] != "tok" {
-		t.Errorf("saga not created: %v", store.created)
-	}
-	if len(pub.tokens) != 1 || pub.tokens[0] != "tok" {
-		t.Errorf("event not published: %v", pub.tokens)
-	}
-	if len(store.deleted) != 0 {
-		t.Errorf("saga should not be rolled back, got %v", store.deleted)
-	}
-}
-
-func TestSendEmailVerification_PublishFails_RollsBackSaga(t *testing.T) {
-	store := newFakeStore()
-	pub := &fakePublisher{err: errors.New("broker down")}
-	o := New(store, pub)
-
-	if err := o.SendEmailVerification("u@example.com", "tok"); err == nil {
-		t.Fatal("expected error")
-	}
-	if len(store.deleted) != 1 || store.deleted[0] != "tok" {
-		t.Errorf("expected saga rollback, got %v", store.deleted)
-	}
-}
-
-func TestSendEmailVerification_CreateFails_NoPublish(t *testing.T) {
-	store := newFakeStore()
-	store.createErr = errors.New("db down")
-	pub := &fakePublisher{}
-	o := New(store, pub)
-
-	if err := o.SendEmailVerification("u@example.com", "tok"); err == nil {
-		t.Fatal("expected error")
-	}
-	if len(pub.tokens) != 0 {
-		t.Errorf("publish must not run when saga create fails, got %v", pub.tokens)
-	}
-}
-
 func TestProcess_Delivered_MarksCompleted(t *testing.T) {
 	store := newFakeStore()
 	store.states["tok"] = db.SagaAwaitingDelivery
-	o := New(store, &fakePublisher{})
+	o := New(store)
 	s := &fakeSettler{}
 
 	o.process(context.Background(), resultBody(events.NewVerificationDelivered(events.VerificationDelivered{Token: "tok"})), s)
@@ -186,7 +108,7 @@ func TestProcess_Delivered_MarksCompleted(t *testing.T) {
 func TestProcess_Failed_Compensates(t *testing.T) {
 	store := newFakeStore()
 	store.states["tok"] = db.SagaAwaitingDelivery
-	o := New(store, &fakePublisher{})
+	o := New(store)
 	s := &fakeSettler{}
 
 	o.process(context.Background(), resultBody(events.NewVerificationFailed(events.VerificationFailed{Token: "tok", Reason: "smtp"})), s)
@@ -204,7 +126,7 @@ func TestProcess_Failed_Compensates(t *testing.T) {
 
 func TestProcess_Delivered_UnknownSaga_Acks(t *testing.T) {
 	store := newFakeStore() // no saga for tok
-	o := New(store, &fakePublisher{})
+	o := New(store)
 	s := &fakeSettler{}
 
 	o.process(context.Background(), resultBody(events.NewVerificationDelivered(events.VerificationDelivered{Token: "tok"})), s)
@@ -220,7 +142,7 @@ func TestProcess_Delivered_UnknownSaga_Acks(t *testing.T) {
 func TestProcess_Failed_AlreadyTerminal_Acks(t *testing.T) {
 	store := newFakeStore()
 	store.states["tok"] = db.SagaCompleted // user already confirmed
-	o := New(store, &fakePublisher{})
+	o := New(store)
 	s := &fakeSettler{}
 
 	o.process(context.Background(), resultBody(events.NewVerificationFailed(events.VerificationFailed{Token: "tok"})), s)
@@ -236,7 +158,7 @@ func TestProcess_Failed_AlreadyTerminal_Acks(t *testing.T) {
 func TestProcess_LookupError_Retries(t *testing.T) {
 	store := newFakeStore()
 	store.lookupErr = errors.New("db down")
-	o := New(store, &fakePublisher{})
+	o := New(store)
 	s := &fakeSettler{}
 
 	o.process(context.Background(), resultBody(events.NewVerificationDelivered(events.VerificationDelivered{Token: "tok"})), s)
@@ -246,11 +168,11 @@ func TestProcess_LookupError_Retries(t *testing.T) {
 	}
 }
 
-func TestProcess_CancelFails_Retries(t *testing.T) {
+func TestProcess_CompensateFails_Retries(t *testing.T) {
 	store := newFakeStore()
 	store.states["tok"] = db.SagaAwaitingDelivery
-	store.cancelErr = errors.New("db down")
-	o := New(store, &fakePublisher{})
+	store.compensateErr = errors.New("db down")
+	o := New(store)
 	s := &fakeSettler{}
 
 	o.process(context.Background(), resultBody(events.NewVerificationFailed(events.VerificationFailed{Token: "tok"})), s)
@@ -258,13 +180,13 @@ func TestProcess_CancelFails_Retries(t *testing.T) {
 	if s.retried == "" {
 		t.Fatalf("expected retry, got ack=%v dl=%q", s.acked, s.deadLettered)
 	}
-	if len(store.compensated) != 0 {
-		t.Errorf("must not mark compensated when cancel failed, got %v", store.compensated)
+	if len(store.canceled) != 0 || len(store.compensated) != 0 {
+		t.Errorf("must not partially compensate on failure, got canceled=%v compensated=%v", store.canceled, store.compensated)
 	}
 }
 
 func TestProcess_MalformedJSON_DeadLetters(t *testing.T) {
-	o := New(newFakeStore(), &fakePublisher{})
+	o := New(newFakeStore())
 	s := &fakeSettler{}
 
 	o.process(context.Background(), []byte("{not json"), s)
@@ -275,7 +197,7 @@ func TestProcess_MalformedJSON_DeadLetters(t *testing.T) {
 }
 
 func TestProcess_UnexpectedType_DeadLetters(t *testing.T) {
-	o := New(newFakeStore(), &fakePublisher{})
+	o := New(newFakeStore())
 	s := &fakeSettler{}
 
 	body := resultBody(events.Envelope{Type: "release.detected", Version: 1, Payload: json.RawMessage("{}")}, nil)

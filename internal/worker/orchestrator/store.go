@@ -12,8 +12,9 @@ import (
 type Store interface {
 	SagaState(token string) (db.SagaState, error)
 	MarkCompleted(token string) error
-	MarkCompensated(token string) error
-	CancelPendingSubscription(token string) error
+	// Compensate cancels the still-pending subscription for token and marks
+	// the saga compensated, atomically.
+	Compensate(token string) error
 }
 
 type gormStore struct {
@@ -34,23 +35,25 @@ func (s *gormStore) SagaState(token string) (db.SagaState, error) {
 }
 
 func (s *gormStore) MarkCompleted(token string) error {
-	return s.updateState(token, db.SagaCompleted)
-}
-
-func (s *gormStore) MarkCompensated(token string) error {
-	return s.updateState(token, db.SagaCompensated)
-}
-
-func (s *gormStore) updateState(token string, state db.SagaState) error {
 	return s.db.Model(&db.OnboardingSaga{}).
 		Where("confirm_token = ?", token).
-		Update("state", state).Error
+		Update("state", db.SagaCompleted).Error
 }
 
-// CancelPendingSubscription soft-deletes the subscription for the given confirm
-// token only while it is still pending; a confirmed subscription is left intact.
-func (s *gormStore) CancelPendingSubscription(token string) error {
-	return s.db.
-		Where("confirm_token = ? AND status = ?", token, db.StatusPending).
-		Delete(&db.Subscription{}).Error
+// Compensate soft-deletes the subscription for the given confirm token (only
+// while it is still pending; a confirmed subscription is left intact) and
+// marks the saga compensated in one transaction, so a crash between the two
+// can never leave the subscription cancelled with the saga still
+// awaiting_delivery, or vice versa.
+func (s *gormStore) Compensate(token string) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.
+			Where("confirm_token = ? AND status = ?", token, db.StatusPending).
+			Delete(&db.Subscription{}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&db.OnboardingSaga{}).
+			Where("confirm_token = ?", token).
+			Update("state", db.SagaCompensated).Error
+	})
 }
