@@ -16,6 +16,12 @@ import (
 
 const maxSMTPRetries = 5
 
+// maxResultReportRetries bounds retries for publishing a verification
+// outcome. Kept small since, unlike SMTP delivery, the side effect (or its
+// failure) has already happened by this point - this is just closing the
+// window on reporting it.
+const maxResultReportRetries = 3
+
 // EmailSender sends a single email.
 type EmailSender interface {
 	SendEmail(ctx context.Context, to, subject, body string) error
@@ -91,20 +97,54 @@ func verificationToken(msg mq.DeliveryMessage) string {
 	return tok
 }
 
-// reportDelivered publishes a verification.delivered result; publish failures are
-// logged, not retried, since the email was already sent.
+// reportDelivered publishes a verification.delivered result, retrying a
+// bounded number of times. If it still fails, the outcome is only logged: the
+// command is acked either way since the email was already sent, so retrying
+// the whole command would risk sending a duplicate.
 func (m *Mailer) reportDelivered(ctx context.Context, msg mq.DeliveryMessage) {
-	if err := m.results.VerificationDelivered(ctx, verificationToken(msg)); err != nil {
-		logger.Log.Error("failed to publish verification.delivered result", zap.Error(err))
+	token := verificationToken(msg)
+	if err := m.reportWithRetry(ctx, func() error {
+		return m.results.VerificationDelivered(ctx, token)
+	}); err != nil {
+		logger.Log.Error("failed to publish verification.delivered result after retries",
+			zap.Int("attempts", maxResultReportRetries), zap.Error(err))
 	}
 }
 
 // reportFailed publishes a verification.failed result so the orchestrator can
-// compensate; publish failures are logged.
+// compensate, retrying a bounded number of times before giving up and logging.
 func (m *Mailer) reportFailed(ctx context.Context, msg mq.DeliveryMessage, cause error) {
-	if err := m.results.VerificationFailed(ctx, verificationToken(msg), cause.Error()); err != nil {
-		logger.Log.Error("failed to publish verification.failed result", zap.Error(err))
+	token := verificationToken(msg)
+	if err := m.reportWithRetry(ctx, func() error {
+		return m.results.VerificationFailed(ctx, token, cause.Error())
+	}); err != nil {
+		logger.Log.Error("failed to publish verification.failed result after retries",
+			zap.Int("attempts", maxResultReportRetries), zap.Error(err))
 	}
+}
+
+// reportWithRetry retries fn with the mailer's exponential backoff, bounded
+// by maxResultReportRetries.
+func (m *Mailer) reportWithRetry(ctx context.Context, fn func() error) error {
+	backoff := m.baseBackoff
+	var err error
+
+	for attempt := range maxResultReportRetries {
+		if err = fn(); err == nil {
+			return nil
+		}
+
+		if attempt < maxResultReportRetries-1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2
+			}
+		}
+	}
+
+	return err
 }
 
 func buildEmail(msg mq.DeliveryMessage) (subject, body string, known bool) {
