@@ -229,8 +229,8 @@ const file_mailer_v1_mailer_proto_rawDesc = "" +
 	"\rMailerService\x129\n" +
 	"\x04Send\x12\x1a.mailer.v1.DeliveryCommand\x1a\x15.mailer.v1.SendResult\x12C\n" +
 	"\n" +
-	"SendStream\x12\x1a.mailer.v1.DeliveryCommand\x1a\x15.mailer.v1.SendResult(\x010\x01B\xd4\x01\n" +
-	"\rcom.mailer.v1B\vMailerProtoP\x01Zqgithub.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/grpcgen/mailer/v1;mailerv1\xa2\x02\x03MXX\xaa\x02\tMailer.V1\xca\x02\tMailer\\V1\xe2\x02\x15Mailer\\V1\\GPBMetadata\xea\x02\n" +
+	"SendStream\x12\x1a.mailer.v1.DeliveryCommand\x1a\x15.mailer.v1.SendResult(\x010\x01B\xc5\x01\n" +
+	"\rcom.mailer.v1B\vMailerProtoP\x01Zbgithub.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/proto/mailer/v1;mailerv1\xa2\x02\x03MXX\xaa\x02\tMailer.V1\xca\x02\tMailer\\V1\xe2\x02\x15Mailer\\V1\\GPBMetadata\xea\x02\n" +
 	"Mailer::V1b\x06proto3"
 
 var (
