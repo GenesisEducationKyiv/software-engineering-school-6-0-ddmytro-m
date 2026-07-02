@@ -13,26 +13,29 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 
 	transportHttp "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/transport/http/handlers"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/scanner"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	logger.InitLogger()
 	defer logger.Sync()
 
-	cfg := config.Get()
+	if err := config.LoadEnv(); err != nil {
+		logger.Log.Fatal("failed to load env", zap.Error(err))
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg := config.LoadServerConfig()
 
 	logger.Log.Info("configuration loaded", zap.String("environment", cfg.AppEnv))
 
@@ -65,27 +68,24 @@ func main() {
 		github.WithHTTPClient(httpClient),
 	)
 
-	stream := redis.NewStream(redisClient, mq.DeliveryStream)
+	stream := redis.NewStream(redisClient, contract.DeliveryStream)
 	deliveryPublisher := mq.NewDeliveryPublisher(stream)
 	emailMQ := mq.NewEmailMQ(deliveryPublisher)
 
 	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
-	smtpClient := smtp.NewClient(cfg.SMTP.Host, cfg.SMTP.Port, cfg.SMTP.Username, cfg.SMTP.Password, cfg.SMTP.From, cfg.SMTP.SenderEmail)
 
-	mlr := mailer.NewMailer(stream, "mailer_group", 3, smtpClient)
-
-	subHandler := handlers.NewSubscriptionHandler(orm, ghClient, emailMQ)
+	subStore := db.NewSubscriptionStore(orm)
+	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, emailMQ)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
 	go scn.Start(ctx)
-	go mlr.Start(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
 			logger.Log.Error("HTTP server error", zap.Error(err))
 		}
 	}()
 
-	logger.Log.Info("Scanner, Mailer, and HTTP Server are running...")
+	logger.Log.Info("Scanner and HTTP Server are running...")
 	<-ctx.Done()
 
 	logger.Log.Info("shutting down...")

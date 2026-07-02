@@ -42,4 +42,4 @@ The `mailer` worker will be implemented as a consumer group that processes messa
 -   **Not a Full-Fledged Broker**: Redis is not a dedicated message broker. It lacks advanced features found in systems like RabbitMQ (e.g., complex routing topologies, exchanges) or Kafka (e.g., a true distributed commit log for event sourcing at a massive scale). For the defined scope of this project, these features are not required.
 -   **Observability**: While Redis has good monitoring capabilities, the tools for observing and managing message flows within streams may be less mature than those available for dedicated brokers. This is a manageable trade-off.
 
-This decision aligns with our "modular monolith" architecture, allowing us to build a reliable, decoupled notification system without significantly increasing the system's complexity.
+This decision aligns with our microservices architecture, allowing us to build a reliable, decoupled notification system where the mailer is an independently deployable service without significantly increasing the system's complexity.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 	goredis "github.com/redis/go-redis/v9"
@@ -93,9 +93,9 @@ func TestProcessMessage_ValidEvents(t *testing.T) {
 		name  string
 		event string
 	}{
-		{"NewRelease", string(mq.EventNewRelease)},
-		{"RepoMoved", string(mq.EventRepoMoved)},
-		{"EmailVerification", string(mq.EventEmailVerification)},
+		{"NewRelease", string(contract.EventNewRelease)},
+		{"RepoMoved", string(contract.EventRepoMoved)},
+		{"EmailVerification", string(contract.EventEmailVerification)},
 	}
 
 	for _, tc := range events {
@@ -161,7 +161,7 @@ func TestMailer_StartAndConsume(t *testing.T) {
 		t.Logf("EnsureConsumerGroup error: %v", err)
 	}
 
-	jsonPayload := fmt.Sprintf(`{"event": "%s", "email": "test@example.com", "repo": "owner/repo", "release": "v1.0.0"}`, mq.EventNewRelease)
+	jsonPayload := fmt.Sprintf(`{"event": "%s", "email": "test@example.com", "repo": "owner/repo", "release": "v1.0.0"}`, contract.EventNewRelease)
 
 	err := rc.XAdd(ctx, &goredis.XAddArgs{
 		Stream: "test_stream",

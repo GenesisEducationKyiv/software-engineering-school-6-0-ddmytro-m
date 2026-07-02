@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -9,9 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
@@ -23,16 +22,16 @@ type EmailSender interface {
 
 // SubscriptionHandler handles HTTP requests related to subscriptions.
 type SubscriptionHandler struct {
-	db          *gorm.DB
-	ghClient    *github.Client
+	store       SubscriptionRepository
+	resolver    RepoResolver
 	emailSender EmailSender
 }
 
 // NewSubscriptionHandler creates a new instance of SubscriptionHandler.
-func NewSubscriptionHandler(db *gorm.DB, ghClient *github.Client, emailSender EmailSender) *SubscriptionHandler {
+func NewSubscriptionHandler(store SubscriptionRepository, resolver RepoResolver, emailSender EmailSender) *SubscriptionHandler {
 	return &SubscriptionHandler{
-		db:          db,
-		ghClient:    ghClient,
+		store:       store,
+		resolver:    resolver,
 		emailSender: emailSender,
 	}
 }
@@ -43,6 +42,40 @@ func (h *SubscriptionHandler) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/confirm/:token", h.Confirm)
 	r.GET("/unsubscribe/:token", h.Unsubscribe)
 	r.GET("/subscriptions", h.GetSubscriptions)
+}
+
+func (h *SubscriptionHandler) resolveOrCreateRepo(ctx context.Context, owner, name string) (*db.Repository, int, error) {
+	repo, err := h.store.FindRepoByPath(owner, name)
+	if err == nil {
+		return repo, 0, nil
+	}
+	if !errors.Is(err, db.ErrNotFound) {
+		return nil, http.StatusInternalServerError, errors.New("database error")
+	}
+
+	ghRepo := h.resolver.GetRepository(ctx, owner, name, "")
+	if ghRepo.Error != nil || ghRepo.StatusCode != 200 {
+		return nil, http.StatusNotFound, errors.New("repository not found on GitHub")
+	}
+
+	existing, lookupErr := h.store.FindRepoByGitHubID(ghRepo.Data.ID)
+	switch {
+	case lookupErr == nil:
+		existing.Owner = owner
+		existing.Name = name
+		if saveErr := h.store.SaveRepo(existing); saveErr != nil {
+			return nil, http.StatusInternalServerError, errors.New("failed to save repository")
+		}
+		return existing, 0, nil
+	case errors.Is(lookupErr, db.ErrNotFound):
+		newRepo := &db.Repository{GitHubID: ghRepo.Data.ID, Owner: owner, Name: name, Status: db.StatusIdle}
+		if createErr := h.store.CreateRepo(newRepo); createErr != nil {
+			return nil, http.StatusInternalServerError, errors.New("failed to save repository")
+		}
+		return newRepo, 0, nil
+	default:
+		return nil, http.StatusInternalServerError, errors.New("database error")
+	}
 }
 
 func generateToken() (string, error) {
@@ -99,42 +132,14 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	}
 	owner, name := parts[0], parts[1]
 
-	// resolve or create the repository record.
-	var repo db.Repository
-	err := h.db.Where("owner = ? AND name = ?", owner, name).First(&repo).Error
-	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-			return
-		}
-
-		ghRepo := h.ghClient.GetRepository(c.Request.Context(), owner, name, "")
-		if ghRepo.Error != nil || ghRepo.StatusCode != 200 {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Repository not found on GitHub"})
-			return
-		}
-
-		err = h.db.Where("github_id = ?", ghRepo.Data.ID).First(&repo).Error
-		switch {
-		case err == nil:
-			repo.Owner = owner
-			repo.Name = name
-			h.db.Save(&repo)
-		case errors.Is(err, gorm.ErrRecordNotFound):
-			repo = db.Repository{GitHubID: ghRepo.Data.ID, Owner: owner, Name: name, Status: db.StatusIdle}
-			if err := h.db.Create(&repo).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save repository"})
-				return
-			}
-		default:
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-			return
-		}
+	repo, httpStatus, resolveErr := h.resolveOrCreateRepo(c.Request.Context(), owner, name)
+	if resolveErr != nil {
+		c.JSON(httpStatus, gin.H{"error": resolveErr.Error()})
+		return
 	}
 
-	var sub db.Subscription
-	err = h.db.Where("email = ? AND repository_id = ?", req.Email, repo.ID).First(&sub).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	sub, err := h.store.FindSubscription(req.Email, repo.ID)
+	if err != nil && !errors.Is(err, db.ErrNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
@@ -154,9 +159,12 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 			return
 		}
-		var count int64
-		h.db.Model(&db.Subscription{}).Where("confirm_token = ?", confirmToken).Count(&count)
-		if count == 0 {
+		taken, tokenErr := h.store.IsConfirmTokenTaken(confirmToken)
+		if tokenErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+			return
+		}
+		if !taken {
 			break
 		}
 	}
@@ -166,19 +174,19 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		sub.Status = db.StatusPending
 		sub.ConfirmToken = confirmToken
 		sub.APIToken = "" // only issued on confirmation
-		if err := h.db.Save(&sub).Error; err != nil {
+		if err := h.store.SaveSubscription(sub); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update subscription"})
 			return
 		}
 	} else {
-		sub = db.Subscription{
+		sub = &db.Subscription{
 			Email:        req.Email,
 			RepositoryID: repo.ID,
 			Status:       db.StatusPending,
 			ConfirmToken: confirmToken,
 			APIToken:     "",
 		}
-		if err := h.db.Create(&sub).Error; err != nil {
+		if err := h.store.CreateSubscription(sub); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription"})
 			return
 		}
@@ -205,9 +213,9 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 		return
 	}
 
-	var sub db.Subscription
-	if err := h.db.Where("confirm_token = ?", token).First(&sub).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	sub, err := h.store.FindSubscriptionByConfirmToken(token)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Invalid or expired token"})
 			return
 		}
@@ -223,7 +231,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 		}
 		sub.Status = db.StatusActive
 		sub.APIToken = apiToken
-		if err := h.db.Save(&sub).Error; err != nil {
+		if err := h.store.SaveSubscription(sub); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to activate subscription"})
 			return
 		}
@@ -254,9 +262,9 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 		return
 	}
 
-	var sub db.Subscription
-	if err := h.db.Where("confirm_token = ? AND api_token = ?", confirmToken, apiToken).First(&sub).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	sub, err := h.store.FindSubscriptionByTokens(confirmToken, apiToken)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 			return
 		}
@@ -266,7 +274,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 
 	if sub.Status != db.StatusUnsubscribed {
 		sub.Status = db.StatusUnsubscribed
-		if err := h.db.Save(&sub).Error; err != nil {
+		if err := h.store.SaveSubscription(sub); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unsubscribe"})
 			return
 		}
@@ -298,9 +306,8 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 		return
 	}
 
-	var caller db.Subscription
-	if err := h.db.Where("email = ? AND api_token = ?", email, apiToken).First(&caller).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+	if _, err := h.store.FindSubscriptionByEmailAndToken(email, apiToken); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token for the given email"})
 			return
 		}
@@ -308,8 +315,8 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 		return
 	}
 
-	var subs []db.Subscription
-	if err := h.db.Where("email = ? AND status != ?", email, db.StatusUnsubscribed).Find(&subs).Error; err != nil {
+	subs, err := h.store.ListSubscriptions(email)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
@@ -324,8 +331,8 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 		repoIDs = append(repoIDs, s.RepositoryID)
 	}
 
-	var repos []db.Repository
-	if err := h.db.Where("id IN ?", repoIDs).Find(&repos).Error; err != nil {
+	repos, err := h.store.FindReposByIDs(repoIDs)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}

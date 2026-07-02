@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: server
     ports:
       - "8080:8080"
     environment:
@@ -28,15 +29,32 @@ services:
       - SCANNER_PRODUCER_INTERVAL_SECONDS
       - SCANNER_MIN_INTERVAL_SECONDS
 
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mailer:
+    profiles:
+      - app
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: mailer
+    environment:
+      - REDIS_ADDR=redis:6379
+
+      - APP_ENV
+      - MAILER_WORKERS
       - SMTP_HOST
       - SMTP_PORT
       - SMTP_USER
       - SMTP_PASS
       - SMTP_FROM
+      - SMTP_SENDER_EMAIL
 
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
 

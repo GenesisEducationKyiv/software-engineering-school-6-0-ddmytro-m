@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```shell
-make run              # go run cmd/server/main.go
-make build            # go build -o bin/server cmd/server/main.go
+make run              # go run cmd/server/main.go  (alias: run:server)
+make run:mailer       # go run cmd/mailer/main.go
+make build            # build both server and mailer binaries
+make build:server     # go build -o bin/server cmd/server/main.go
+make build:mailer     # go build -o bin/mailer cmd/mailer/main.go
 make lint             # golangci-lint run
 make lint:fix         # golangci-lint run --fix
 
@@ -14,8 +17,9 @@ make test:unit        # go test -v -tags="unit" ./...
 make test:integration # go test -v -tags="integration" ./...  (requires Docker)
 make test             # both unit + integration
 
-make docker:up        # docker compose up app -d
-make docker:down      # docker compose down --remove-orphans
+make docker:up        # docker compose --profile app up -d  (postgres, redis, app, mailer)
+make docker:down      # docker compose --profile app down --remove-orphans
+make docker:logs      # docker compose --profile app logs -f
 make docker:test      # docker compose run --rm test
 ```
 
@@ -29,7 +33,9 @@ Required env vars: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SMTP_HOST`, 
 
 ## Architecture
 
-Three goroutines start from `cmd/server/main.go`: the **Scanner**, the **Mailer**, and the **HTTP server**.
+Two separate binaries are built and deployed:
+- **`cmd/server/main.go`** — runs the Scanner and the HTTP server (two goroutines)
+- **`cmd/mailer/main.go`** — runs the Mailer consumer (standalone service)
 
 ### HTTP layer (`internal/transport/http/`)
 Gin router with a Prometheus middleware. `SubscriptionHandler` owns four routes:
@@ -37,6 +43,11 @@ Gin router with a Prometheus middleware. `SubscriptionHandler` owns four routes:
 - `GET /confirm/:token` — activates the subscription, returns `X-Api-Token` header
 - `GET /unsubscribe/:token` — requires `Authorization: Bearer <api_token>` to unsubscribe
 - `GET /subscriptions?email=...` — requires Bearer token, lists non-unsubscribed subscriptions
+
+`SubscriptionHandler` depends on three interfaces (defined in `handlers/store.go`):
+- `SubscriptionRepository` — all DB access; implemented by `gormSubscriptionStore`
+- `RepoResolver` — GitHub repo lookup; satisfied structurally by `*github.Client`
+- `EmailSender` — queues verification/notification emails; satisfied by `*mq.EmailMQ`
 
 ### GitHub API transport stack (`internal/api/github/`)
 Requests flow through a layered `http.RoundTripper` chain built in `main.go`:
@@ -69,7 +80,7 @@ GORM + PostgreSQL. Schema is auto-migrated on startup. Two models:
 - `Repository`: tracks `GitHubID`, `Owner/Name`, `LastRelease` (embedded), `Status` (idle/processing), `LastScannedAt`
 - `Subscription`: tracks `Email`, `RepositoryID`, `Status` (pending/active/unsubscribed), `ConfirmToken`, `APIToken`
 
-Both `config.Get()` and `db.Get()` are singletons initialized with `sync.Once`.
+`db.Get()` is a singleton initialized with `sync.Once`. Config is loaded via `config.LoadServerConfig()` (server) or `config.LoadMailerConfig()` (mailer) — each reads only the env vars its service needs.
 
 ## Testing
 
@@ -81,7 +92,7 @@ Tests use build tags. Unit tests are self-contained; integration tests use **tes
 
 Architecture docs and ADRs are in `docs/`:
 - `docs/system_design.md` — high-level system design
-- `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ)
+- `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ, modular microservices)
 
 ## Linting
 

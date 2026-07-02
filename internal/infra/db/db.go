@@ -79,7 +79,7 @@ var (
 // Get returns the singleton database instance, initializing it if necessary.
 func Get() *gorm.DB {
 	once.Do(func() {
-		dsn := config.Get().DBDSN
+		dsn := config.LoadDBDSN()
 		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 		if err != nil {
 			logger.Log.Fatal("failed to connect to database", zap.Error(err))

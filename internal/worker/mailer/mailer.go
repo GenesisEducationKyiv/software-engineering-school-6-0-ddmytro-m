@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
@@ -178,7 +178,7 @@ func (m *Mailer[M]) processMessage(ctx context.Context, workerID int, message M)
 		return
 	}
 
-	var msg mq.DeliveryMessage
+	var msg contract.DeliveryMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		logger.Log.Error("failed to unmarshal payload", zap.Int("worker_id", workerID), zap.String("message_id", message.ID()), zap.Error(err))
 		m.deadLetter(ctx, workerID, message, fmt.Sprintf("unmarshal error: %v", err))
@@ -216,17 +216,17 @@ func (m *Mailer[M]) processMessage(ctx context.Context, workerID int, message M)
 
 // buildEmail returns the subject/body for a known event, and false if the
 // event type is unrecognised.
-func (m *Mailer[M]) buildEmail(msg mq.DeliveryMessage) (subject, body string, known bool) {
+func (m *Mailer[M]) buildEmail(msg contract.DeliveryMessage) (subject, body string, known bool) {
 	switch msg.Event {
-	case mq.EventNewRelease:
+	case contract.EventNewRelease:
 		return fmt.Sprintf("New release for %s: %s", msg.Repo, msg.Release),
 			fmt.Sprintf("A new release %s is available for %s.", msg.Release, msg.Repo),
 			true
-	case mq.EventRepoMoved:
+	case contract.EventRepoMoved:
 		return fmt.Sprintf("Repository moved: %s", msg.Repo),
 			fmt.Sprintf("The repository %s has been moved or renamed.", msg.Repo),
 			true
-	case mq.EventEmailVerification:
+	case contract.EventEmailVerification:
 		return "Verify your email",
 			fmt.Sprintf("Your verification token is %v", msg.Payload["token"]),
 			true
