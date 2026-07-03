@@ -1,4 +1,4 @@
-// Package main is the entry point for the mailer service.
+// Package main is the entry point for the notifier service.
 package main
 
 import (
@@ -13,9 +13,9 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/smtp"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/notifier"
 )
 
 func main() {
@@ -29,13 +29,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.LoadMailerConfig()
+	cfg := config.LoadNotifierConfig()
 
-	smtpClient := smtp.NewClient(
-		cfg.SMTP.Host, cfg.SMTP.Port,
-		cfg.SMTP.Username, cfg.SMTP.Password,
-		cfg.SMTP.From, cfg.SMTP.SenderEmail,
-	)
+	redisClient := redis.GetClient(cfg.Redis.Addr)
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			logger.Log.Error("error closing Redis client", zap.Error(err))
+		}
+	}()
 
 	retryPolicy := rabbitmq.NewRetryPolicy(
 		time.Duration(cfg.RabbitMQ.RetryTTLSeconds)*time.Second,
@@ -50,13 +51,16 @@ func main() {
 		}
 	}()
 
-	mlr := mailer.New(smtpClient)
+	publisher := notifier.NewCommandPublisher(rabbitmq.NewPublisher(conn))
+	dedup := redis.NewDedup(redisClient, time.Duration(cfg.DedupTTLHours)*time.Hour)
+	ntf := notifier.New(publisher, dedup)
+
 	consumer := rabbitmq.NewConsumer(
 		conn,
-		rabbitmq.CommandsEndpoint.Queues,
+		rabbitmq.NotificationsEndpoint.Queues,
 		cfg.PrefetchCount,
 		retryPolicy,
-		mlr.Handler(),
+		ntf.Handler(),
 	)
 
 	var wg sync.WaitGroup
@@ -66,9 +70,9 @@ func main() {
 		})
 	}
 
-	logger.Log.Info("Mailer started", zap.Int("workers", cfg.Workers))
+	logger.Log.Info("Notifier started", zap.Int("workers", cfg.Workers))
 	<-ctx.Done()
-	logger.Log.Info("Mailer shutting down, waiting for workers...")
+	logger.Log.Info("Notifier shutting down, waiting for workers...")
 	wg.Wait()
-	logger.Log.Info("Mailer stopped")
+	logger.Log.Info("Notifier stopped")
 }

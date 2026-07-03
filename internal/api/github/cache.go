@@ -99,14 +99,19 @@ func (t *CacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		Body:       bodyBytes,
 	}
 
-	if b, err := json.Marshal(cached); err == nil {
-		ttl := t.TTL
-		if resp.StatusCode >= 400 {
-			ttl = t.ErrorTTL
-		}
+	ttl := t.TTL
+	if resp.StatusCode >= 400 {
+		ttl = t.ErrorTTL
+	}
 
-		err = t.Cache.Set(ctx, cacheKey, b, ttl)
-		if err != nil {
+	// A non-positive TTL means "don't cache". Passing 0 to Redis would persist
+	// the entry forever, serving stale responses indefinitely.
+	if ttl <= 0 {
+		return resp, nil
+	}
+
+	if b, err := json.Marshal(cached); err == nil {
+		if err = t.Cache.Set(ctx, cacheKey, b, ttl); err != nil {
 			logger.Log.Error("cache transport: failed to set cache", zap.String("key", cacheKey), zap.Error(err))
 		}
 	}

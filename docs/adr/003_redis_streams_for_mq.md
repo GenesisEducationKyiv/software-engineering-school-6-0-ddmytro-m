@@ -3,6 +3,8 @@
 ## Status
 Accepted
 
+Superseded by [ADR 005](005_rabbitmq_event_broker.md): Redis Streams is no longer used as the message queue — both events and commands now flow through RabbitMQ. Redis remains only for the GitHub response cache and consumer deduplication.
+
 ## Context
 
 The system requires a mechanism to send notifications (e.g., for new software releases, repository moves) to users asynchronously and reliably. The core requirements for this mechanism are:

@@ -2,25 +2,37 @@
 
 ## 1. System Architecture
 
-The system is designed as **two independent microservices** with clearly demarcated domain boundaries. Each service owns its own concern and communicates with the other exclusively through Redis Streams.
+The system is designed as **three independent microservices** with clearly demarcated domain boundaries. Services never call each other directly; all cross-service communication is asynchronous messaging over two channels with distinct semantics:
+
+- **RabbitMQ topic exchange `github_scanner.events`** — carries **domain events** (facts, past tense: `release.detected`, `repository.moved`, `subscription.created`), published by the Server and fanned out by routing key to any interested consumer.
+- **RabbitMQ topic exchange `github_scanner.commands`** — carries **commands** (imperatives: "send this email"), a point-to-point work queue produced by the Notifier and consumed by the Mailer. The Notifier publishes to the exchange (routing key `email.send`), never to the queue, so it does not know its consumers.
+
+Redis is no longer part of the messaging path — it serves only the GitHub response cache and the Notifier's deduplication keys.
+
+See [ADR 005](adr/005_rabbitmq_event_broker.md) for the events-vs-commands rationale.
 
 ### Microservices
 
 | Service | Binary | Responsibility |
 |---------|--------|----------------|
-| **Server** | `cmd/server/main.go` | Subscription HTTP API + GitHub repository scanner |
-| **Mailer** | `cmd/mailer/main.go` | Email delivery consumer (Redis Streams → SMTP) |
+| **Server** | `cmd/server/main.go` | Subscription HTTP API + GitHub repository scanner; publishes domain events |
+| **Notifier** | `cmd/notifier/main.go` | Notification policy: consumes domain events and emits email commands (both via RabbitMQ) |
+| **Mailer** | `cmd/mailer/main.go` | Email delivery consumer (RabbitMQ commands → SMTP) |
 
 ### Core Components (Server)
 - **API Server**: Handles user requests for subscriptions and verification. It secures sensitive endpoints using an API Authorization Token (X-API-TOKEN). The `SubscriptionHandler` depends on `SubscriptionRepository` and `RepoResolver` interfaces — no direct GORM or GitHub client coupling.
 - **Scanner (Background Worker)**: An adaptive engine that identifies repositories due for a check and manages GitHub API quota.
 
+### Core Component (Notifier)
+- **Notification Service (Event Consumer)**: The single home of notification policy. Consumes domain events from the RabbitMQ `notifications` queue, decides what notification each event warrants, and publishes `DeliveryMessage` commands to the `github_scanner.commands` exchange. Deduplicates events by envelope ID (at-least-once delivery implies duplicates), acks only after the command is durably published, and routes poison/exhausted messages to a dead-letter queue.
+
 ### Core Component (Mailer)
-- **Notifier/Mailer (Background Worker)**: Consumes events from the Redis Streams Message Queue to send emails via SMTP with retry logic.
+- **Mailer (Background Worker)**: Consumes email commands from the RabbitMQ `email.delivery` queue and sends emails via SMTP, with in-process retry plus broker-level retry/DLQ.
 
 ### Storage & Infrastructure
 - **PostgreSQL/GORM**: Stores subscriptions, repository metadata (including ETags), and scan history.
-- **Redis**: Acts as both a high-speed cache for GitHub API responses and the backbone for the reliable Message Queue (Redis Streams).
+- **Redis**: A high-speed cache for GitHub API responses and the store for the Notifier's deduplication keys. (No longer a message queue.)
+- **RabbitMQ**: Two durable topic exchanges (events, commands) with publisher confirms, tiered exponential-backoff retry queues + dead-letter queues per consumer, and a management UI for queue observability.
 
 ## 2. Modular Boundaries
 
@@ -30,10 +42,12 @@ Each module exposes its behaviour through interfaces, not concrete types. Cross-
 |--------|-----------|----------------|
 | `handlers` | `SubscriptionRepository` | `gormSubscriptionStore` in `handlers/store.go` |
 | `handlers` | `RepoResolver` | `*github.Client` (structural — no wrapper needed) |
-| `handlers` | `EmailSender` | `*mq.EmailMQ` |
+| `handlers` | `EmailSender` | RabbitMQ-backed event publisher (`infra/rabbitmq`) |
 | `worker/scanner` | `RepositoryStore` | `gormStore` in `scanner/store.go` |
 | `worker/scanner` | `RepoProcessor` | `*processor` |
-| `worker/mailer` | (reads Redis Stream) | `redis.Stream` via `mq.EmailMQ` |
+| `worker/scanner` | `Notifier` | RabbitMQ-backed event publisher (`infra/rabbitmq`) |
+| `worker/notifier` | `CommandPublisher`, `DedupStore` | RabbitMQ command publisher + Redis `Dedup` |
+| `worker/mailer` | `EmailSender` | `*smtp.Client` (consumes the RabbitMQ command queue) |
 
 ## 3. Functional Requirements
 
@@ -45,6 +59,7 @@ Each module exposes its behaviour through interfaces, not concrete types. Cross-
 - **FR6: Repository Relocation Handling**: The system must detect if a repository has been moved or renamed by comparing its unique GitHub ID against the stored value. If a mismatch occurs, it must notify subscribers and mark their subscriptions accordingly.
 - **FR7: Crash Recovery**: On startup, the scanner must automatically identify and reset the status of any repositories that were in a "processing" state, ensuring they can be scanned again in the next cycle.
 - **FR8: Selective Notifications**: Notifications are sent only to subscribers with an "active" status.
+- **FR9: Domain Event Publication**: The system must publish domain events (`release.detected`, `repository.moved`, `subscription.created`) to the message broker as facts, wrapped in a versioned envelope with a unique ID. The decision of what notification an event warrants belongs exclusively to the Notification service.
 
 ## 4. Non-Functional Requirements
 
@@ -60,7 +75,9 @@ The system is designed to meet the following non-functional requirements:
 - **NFR3: Reliability and Resilience**
     - **Stateful Recovery**: The scanner is designed to be self-healing. By resetting "processing" states on startup, it ensures that a crash does not leave repositories in an un-scannable state.
     - **Graceful Error Handling**: The system must gracefully handle network failures, API errors (e.g., `404 Not Found`), and unexpected response formats without crashing.
-    - **Fault-Tolerant Notifications**: The notification engine uses a reliable message queue (Redis Streams) with auto-claim features to ensure that notifications are not lost if a mailer worker crashes.
+    - **Fault-Tolerant Notifications**: The notification engine uses durable RabbitMQ messaging end to end — durable exchanges/queues, persistent messages, publisher confirms, manual acks, and per-consumer tiered-retry + dead-letter queues — so notifications are not lost if any worker crashes.
+    - **At-Least-Once with Idempotency**: Both exchanges deliver at-least-once; consumers must tolerate redelivery. The Notification service deduplicates events by envelope ID before emitting commands, preventing duplicate emails.
+    - **Process Auto-Restart**: All services run under container restart policies (`restart: unless-stopped`) and reconnect to brokers with capped exponential backoff, so transient infrastructure failures heal without operator action.
 
 - **NFR4: API Compliance**
     - **Adaptive Rate Limiting**: The scanner dynamically adjusts its request rate based on the `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers from the GitHub API.
@@ -86,8 +103,25 @@ To minimize quota consumption, the system stores the ETag of every repository an
 
 ## 6. Notification Engine
 
-The notification system is designed to be fault-tolerant, ensuring that no release notification is lost even if a worker crashes or the SMTP server is temporarily unavailable.
-- **Redis Streams MQ**: Notifications are published as events (e.g., EventNewRelease).
-- **Exponential Backoff**: If an email fails to send, the worker retries the operation with increasing delays.
-- **Crash Recovery (AutoClaim)**: On startup, the Mailer uses Redis's XAUTOCLAIM feature to find messages that were "pending" for a long time (e.g., due to a crashed worker) and reprocesses them.
-- **Dead Letter Queue (DLQ)**: Messages that fail after maximum retries or have invalid formats are moved to a DLQ for manual inspection.
+The notification pipeline has three stages — **detect facts → decide what to notify → deliver** — each owned by a different service and connected by durable messaging. No stage can lose a notification even if a worker crashes or a downstream dependency (broker, SMTP) is temporarily unavailable.
+
+### Stage 1: Event publication (Server)
+
+- The scanner and HTTP API publish domain events to the durable RabbitMQ topic exchange `github_scanner.events`, routing key = event type.
+- Events are wrapped in a versioned envelope `{id, type, occurred_at, version, payload}`.
+- **Publisher Confirms**: a publish only succeeds once the broker has durably accepted the message; on nack/timeout the caller retries. A lost `release.detected` is additionally self-healing — the repository is rescanned next interval.
+
+### Stage 2: Notification policy (Notifier)
+
+- Consumes the durable `notifications` queue with manual acks and a prefetch limit (backpressure).
+- **Idempotency**: deduplicates on envelope `id` (Redis `SETNX` + TTL) before acting — at-least-once delivery means redeliveries are expected, and users must not receive duplicate emails.
+- **Ack Ordering**: an event is acked only after the resulting `DeliveryMessage` command is durably published to the commands exchange; a crash in between causes broker redelivery, never loss. If the dedup key was set but the publish fails, the key is rolled back so the retry is not skipped.
+- **Retry Topology**: transient failures republish the event to the wait queue for its attempt tier (`notifications.retry.<i>`, per-queue TTL `base * factor^i`) which dead-letters it back to the main queue after the delay; the attempt count rides in an `x-attempts` header. After the configured number of tiers the event lands in `notifications.dlq`.
+- **Poison Messages**: malformed payloads and unknown event types go straight to the DLQ — never requeued.
+
+### Stage 3: Email delivery (Mailer)
+
+- Consumes the `email.delivery` queue (bound to `github_scanner.commands`) with manual acks and prefetch.
+- **In-process Exponential Backoff**: failed SMTP sends are first retried in-process with increasing delays.
+- **Broker Retry/DLQ**: once in-process retries are exhausted the command is handed back to the broker's tiered retry queues; after the tiers are exhausted it lands in `email.delivery.dlq`. Invalid/unknown commands are dead-lettered immediately.
+- **Crash Recovery**: a consumer crash leaves the in-flight command unacked, so RabbitMQ redelivers it to another consumer — no manual reclaim needed.

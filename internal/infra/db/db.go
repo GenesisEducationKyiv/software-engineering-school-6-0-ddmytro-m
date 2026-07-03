@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 )
 
@@ -71,6 +72,9 @@ type Subscription struct {
 	APIToken     string `gorm:"column:api_token;index:idx_api_token,where:deleted_at IS NULL;size:32"`
 }
 
+// insert cap
+const createBatchSize = 1000
+
 var (
 	once     sync.Once
 	instance *gorm.DB
@@ -80,12 +84,14 @@ var (
 func Get() *gorm.DB {
 	once.Do(func() {
 		dsn := config.LoadDBDSN()
-		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+			CreateBatchSize: createBatchSize,
+		})
 		if err != nil {
 			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
 
-		err = db.AutoMigrate(&Repository{}, &Subscription{})
+		err = db.AutoMigrate(&Repository{}, &Subscription{}, &outbox.Row{})
 		if err != nil {
 			logger.Log.Fatal("failed to migrate database", zap.Error(err))
 		}

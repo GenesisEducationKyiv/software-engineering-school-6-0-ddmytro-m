@@ -10,29 +10,25 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/events"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/metrics"
 )
 
-// EmailSender defines the interface for sending emails.
-type EmailSender interface {
-	SendEmailVerification(email, token string) error
-}
-
 // SubscriptionHandler handles HTTP requests related to subscriptions.
 type SubscriptionHandler struct {
-	store       SubscriptionRepository
-	resolver    RepoResolver
-	emailSender EmailSender
+	store    SubscriptionRepository
+	resolver RepoResolver
 }
 
 // NewSubscriptionHandler creates a new instance of SubscriptionHandler.
-func NewSubscriptionHandler(store SubscriptionRepository, resolver RepoResolver, emailSender EmailSender) *SubscriptionHandler {
+func NewSubscriptionHandler(store SubscriptionRepository, resolver RepoResolver) *SubscriptionHandler {
 	return &SubscriptionHandler{
-		store:       store,
-		resolver:    resolver,
-		emailSender: emailSender,
+		store:    store,
+		resolver: resolver,
 	}
 }
 
@@ -49,7 +45,7 @@ func (h *SubscriptionHandler) resolveOrCreateRepo(ctx context.Context, owner, na
 	if err == nil {
 		return repo, 0, nil
 	}
-	if !errors.Is(err, db.ErrNotFound) {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, http.StatusInternalServerError, errors.New("database error")
 	}
 
@@ -67,7 +63,7 @@ func (h *SubscriptionHandler) resolveOrCreateRepo(ctx context.Context, owner, na
 			return nil, http.StatusInternalServerError, errors.New("failed to save repository")
 		}
 		return existing, 0, nil
-	case errors.Is(lookupErr, db.ErrNotFound):
+	case errors.Is(lookupErr, gorm.ErrRecordNotFound):
 		newRepo := &db.Repository{GitHubID: ghRepo.Data.ID, Owner: owner, Name: name, Status: db.StatusIdle}
 		if createErr := h.store.CreateRepo(newRepo); createErr != nil {
 			return nil, http.StatusInternalServerError, errors.New("failed to save repository")
@@ -139,7 +135,7 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 	}
 
 	sub, err := h.store.FindSubscription(req.Email, repo.ID)
-	if err != nil && !errors.Is(err, db.ErrNotFound) {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
@@ -169,12 +165,21 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 		}
 	}
 
+	verificationEvent, err := outbox.New(events.NewSubscriptionCreated(events.SubscriptionCreated{
+		Email: req.Email,
+		Token: confirmToken,
+	}))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to build verification event"})
+		return
+	}
+
 	if recordExists {
 		// re-send confirmation for a pending or unsubscribed record.
 		sub.Status = db.StatusPending
 		sub.ConfirmToken = confirmToken
 		sub.APIToken = "" // only issued on confirmation
-		if err := h.store.SaveSubscription(sub); err != nil {
+		if err := h.store.SaveSubscription(sub, verificationEvent); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update subscription"})
 			return
 		}
@@ -186,15 +191,8 @@ func (h *SubscriptionHandler) Subscribe(c *gin.Context) {
 			ConfirmToken: confirmToken,
 			APIToken:     "",
 		}
-		if err := h.store.CreateSubscription(sub); err != nil {
+		if err := h.store.CreateSubscription(sub, verificationEvent); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subscription"})
-			return
-		}
-	}
-
-	if h.emailSender != nil {
-		if err := h.emailSender.SendEmailVerification(sub.Email, sub.ConfirmToken); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to queue verification email"})
 			return
 		}
 	}
@@ -215,7 +213,7 @@ func (h *SubscriptionHandler) Confirm(c *gin.Context) {
 
 	sub, err := h.store.FindSubscriptionByConfirmToken(token)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Invalid or expired token"})
 			return
 		}
@@ -264,7 +262,7 @@ func (h *SubscriptionHandler) Unsubscribe(c *gin.Context) {
 
 	sub, err := h.store.FindSubscriptionByTokens(confirmToken, apiToken)
 	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 			return
 		}
@@ -307,7 +305,7 @@ func (h *SubscriptionHandler) GetSubscriptions(c *gin.Context) {
 	}
 
 	if _, err := h.store.FindSubscriptionByEmailAndToken(email, apiToken); err != nil {
-		if errors.Is(err, db.ErrNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token for the given email"})
 			return
 		}

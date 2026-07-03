@@ -181,6 +181,48 @@ func TestCacheTransport_RoundTrip_ErrorTTL(t *testing.T) {
 	}
 }
 
+func TestCacheTransport_RoundTrip_ZeroTTLNotCached(t *testing.T) {
+	fc := newFakeCache()
+	endpoint := "https://api.github.com/foo"
+
+	called := false
+	transport := NewCacheTransport(
+		&mockCacheTransport{
+			roundTripFunc: func(req *http.Request) (*http.Response, error) {
+				called = true
+				return fakeResponse(http.StatusOK, `{"foo":"bar"}`, nil), nil
+			},
+		},
+		fc,
+		0, // success TTL disabled
+		time.Minute,
+	)
+
+	req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if !called {
+		t.Fatal("expected transport to be called")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	if string(body) != `{"foo":"bar"}` {
+		t.Errorf("expected body passthrough, got %q", string(body))
+	}
+
+	// A zero TTL must disable caching, not persist the entry forever.
+	if _, err := fc.Get(context.Background(), getCacheKey(endpoint)); err == nil {
+		t.Error("expected response not to be cached when TTL is 0")
+	}
+}
+
 func TestCacheTransport_RoundTrip_InvalidCachedJSON(t *testing.T) {
 	fc := newFakeCache()
 	endpoint := "https://api.github.com/foo"

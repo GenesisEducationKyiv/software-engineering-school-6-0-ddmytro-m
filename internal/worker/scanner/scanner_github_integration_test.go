@@ -4,10 +4,12 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -17,7 +19,9 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/events"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -58,12 +62,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// captureNotifier records every SendNewRelease call for assertion.
-type captureNotifier struct {
-	releases []notifyCall
-	moved    []movedCall
-}
-
 type notifyCall struct {
 	email   string
 	owner   string
@@ -75,32 +73,6 @@ type movedCall struct {
 	email string
 	owner string
 	name  string
-}
-
-func (n *captureNotifier) SendNewRelease(
-	sub *db.Subscription,
-	repo *db.Repository,
-	release *github.LatestRelease,
-) error {
-	n.releases = append(n.releases, notifyCall{
-		email:   sub.Email,
-		owner:   repo.Owner,
-		name:    repo.Name,
-		tagName: release.TagName,
-	})
-	return nil
-}
-
-func (n *captureNotifier) SendRepoMoved(
-	sub *db.Subscription,
-	repo *db.Repository,
-) error {
-	n.moved = append(n.moved, movedCall{
-		email: sub.Email,
-		owner: repo.Owner,
-		name:  repo.Name,
-	})
-	return nil
 }
 
 // test DB setup
@@ -129,20 +101,78 @@ func setupPostgresContainer(ctx context.Context) (testcontainers.Container, *gor
 		return nil, nil, err
 	}
 
-	err = orm.AutoMigrate(&db.Repository{}, &db.Subscription{})
+	err = orm.AutoMigrate(&db.Repository{}, &db.Subscription{}, &outbox.Row{})
 
 	return pgc, orm, err
 }
 
 func getCleanDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	if err := testDB.Exec("TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY CASCADE").Error; err != nil {
+	if err := testDB.Exec("TRUNCATE TABLE subscriptions, repositories, outbox_rows RESTART IDENTITY CASCADE").Error; err != nil {
 		t.Fatalf("failed to truncate db: %v", err)
 	}
 	return testDB
 }
 
-func newScanner(orm *gorm.DB, ghClient *github.Client, rlp RateLimitProvider, notifier Notifier) *Scanner {
+// outboxReleaseNotifications reads the persisted release.detected outbox
+// rows and decodes them into notifyCall for assertions.
+func outboxReleaseNotifications(t *testing.T, orm *gorm.DB) []notifyCall {
+	t.Helper()
+	var rows []outbox.Row
+	if err := orm.Where("routing_key = ?", string(events.TypeReleaseDetected)).Find(&rows).Error; err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
+	calls := make([]notifyCall, 0, len(rows))
+	for _, row := range rows {
+		calls = append(calls, decodeReleaseDetectedRow(t, row))
+	}
+	return calls
+}
+
+func decodeReleaseDetectedRow(t *testing.T, row outbox.Row) notifyCall {
+	t.Helper()
+	var env events.Envelope
+	if err := json.Unmarshal(row.Payload, &env); err != nil {
+		t.Fatalf("decode outbox envelope: %v", err)
+	}
+	return decodeReleaseDetectedEnvelope(t, env)
+}
+
+func decodeReleaseDetectedEnvelope(t *testing.T, env events.Envelope) notifyCall {
+	t.Helper()
+	payload, err := env.DecodeReleaseDetected()
+	if err != nil {
+		t.Fatalf("decode release.detected payload: %v", err)
+	}
+	owner, name, _ := strings.Cut(payload.Repo, "/")
+	return notifyCall{email: payload.Email, owner: owner, name: name, tagName: payload.ReleaseTag}
+}
+
+// outboxMovedNotifications reads the persisted repository.moved outbox rows
+// and decodes them into movedCall for assertions.
+func outboxMovedNotifications(t *testing.T, orm *gorm.DB) []movedCall {
+	t.Helper()
+	var rows []outbox.Row
+	if err := orm.Where("routing_key = ?", string(events.TypeRepositoryMoved)).Find(&rows).Error; err != nil {
+		t.Fatalf("query outbox rows: %v", err)
+	}
+	calls := make([]movedCall, 0, len(rows))
+	for _, row := range rows {
+		var env events.Envelope
+		if err := json.Unmarshal(row.Payload, &env); err != nil {
+			t.Fatalf("decode outbox envelope: %v", err)
+		}
+		payload, err := env.DecodeRepositoryMoved()
+		if err != nil {
+			t.Fatalf("decode repository.moved payload: %v", err)
+		}
+		owner, name, _ := strings.Cut(payload.Repo, "/")
+		calls = append(calls, movedCall{email: payload.Email, owner: owner, name: name})
+	}
+	return calls
+}
+
+func newScanner(orm *gorm.DB, ghClient *github.Client, rlp RateLimitProvider) *Scanner {
 	cfg := &config.ScannerConfig{
 		Workers:          1,
 		QueueSize:        10,
@@ -151,7 +181,7 @@ func newScanner(orm *gorm.DB, ghClient *github.Client, rlp RateLimitProvider, no
 		ProducerInterval: 10 * time.Second,
 	}
 
-	s := NewScanner(orm, ghClient, notifier, rlp, cfg)
+	s := NewScanner(orm, ghClient, rlp, cfg)
 	s.quota.SetLimit(rate.Inf)
 	return s
 }
@@ -266,7 +296,6 @@ func repoAndReleaseHandler(owner, name string, repoBody, releaseBody string, rep
 
 func TestProcessRepo_NewRelease_NotifiesSubscribersAndPersists(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", `"etag-old"`)
 	seedSubscription(t, dbConn, repo.ID, "alice@example.com")
@@ -284,15 +313,16 @@ func TestProcessRepo_NewRelease_NotifiesSubscribersAndPersists(t *testing.T) {
 		Remaining: 5000,
 		ResetAt:   time.Now().Add(time.Hour),
 	}
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, rl), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, rl))
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	// two notifications — one per active subscriber
-	if len(notifier.releases) != 2 {
-		t.Fatalf("expected 2 notifications, got %d", len(notifier.releases))
+	// two notifications — one per active subscriber, durably queued via the outbox
+	releaseNotifications := outboxReleaseNotifications(t, dbConn)
+	if len(releaseNotifications) != 2 {
+		t.Fatalf("expected 2 notifications, got %d", len(releaseNotifications))
 	}
 	emails := map[string]bool{}
-	for _, c := range notifier.releases {
+	for _, c := range releaseNotifications {
 		emails[c.email] = true
 		if c.tagName != "v1.22.0" {
 			t.Errorf("notification tagName = %q, want v1.22.0", c.tagName)
@@ -321,7 +351,6 @@ func TestProcessRepo_NewRelease_NotifiesSubscribersAndPersists(t *testing.T) {
 
 func TestProcessRepo_RepoMoved_NotifiesAndUnsubscribes(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	// original repo ID is 42
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
@@ -342,24 +371,25 @@ func TestProcessRepo_RepoMoved_NotifiesAndUnsubscribes(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	// should trigger SendRepoMoved for active subscribers
-	if len(notifier.moved) != 2 {
-		t.Fatalf("expected 2 moved notifications, got %d", len(notifier.moved))
+	// should durably queue a repository.moved notification for active subscribers
+	movedNotifications := outboxMovedNotifications(t, dbConn)
+	if len(movedNotifications) != 2 {
+		t.Fatalf("expected 2 moved notifications, got %d", len(movedNotifications))
 	}
 	emails := map[string]bool{}
-	for _, c := range notifier.moved {
+	for _, c := range movedNotifications {
 		emails[c.email] = true
 	}
 	if !emails["alice@example.com"] || !emails["bob@example.com"] {
 		t.Errorf("missing expected recipients: %v", emails)
 	}
 
-	// should NOT trigger SendNewRelease
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 release notifications, got %d", len(notifier.releases))
+	// should NOT queue a release notification
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 release notifications, got %d", len(releaseNotifications))
 	}
 
 	// subscriptions should be marked as unsubscribed
@@ -372,7 +402,6 @@ func TestProcessRepo_RepoMoved_NotifiesAndUnsubscribes(t *testing.T) {
 
 func TestProcessRepo_304_NoNotificationNoTagChange(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", `"etag-v1"`)
 	seedSubscription(t, dbConn, repo.ID, "alice@example.com")
@@ -382,11 +411,11 @@ func TestProcessRepo_304_NoNotificationNoTagChange(t *testing.T) {
 		w.WriteHeader(http.StatusNotModified)
 	})
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications on 304, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications on 304, got %d", len(releaseNotifications))
 	}
 
 	var updated db.Repository
@@ -398,7 +427,6 @@ func TestProcessRepo_304_NoNotificationNoTagChange(t *testing.T) {
 
 func TestProcessRepo_SameTag_NoNotification(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
 
@@ -409,17 +437,16 @@ func TestProcessRepo_SameTag_NoNotification(t *testing.T) {
 		http.StatusOK, http.StatusOK,
 	))
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications when tag unchanged, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications when tag unchanged, got %d", len(releaseNotifications))
 	}
 }
 
 func TestProcessRepo_RepoNotFound_SkipsRelease(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
 	seedSubscription(t, dbConn, repo.ID, "alice@example.com")
@@ -437,11 +464,11 @@ func TestProcessRepo_RepoNotFound_SkipsRelease(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications when repo is 404, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications when repo is 404, got %d", len(releaseNotifications))
 	}
 	// subscriptions left intact — repo may just be temporarily private
 	var activeSubs int64
@@ -455,7 +482,6 @@ func TestProcessRepo_RepoNotFound_SkipsRelease(t *testing.T) {
 
 func TestProcessRepo_RepoCheckRateLimited_FreezesLimiterSkipsRelease(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
 
@@ -472,14 +498,14 @@ func TestProcessRepo_RepoCheckRateLimited_FreezesLimiterSkipsRelease(t *testing.
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
 	if s.quota.Limit() != 0 {
 		t.Errorf("limiter should be frozen (0) after 429 on repo check, got %v", s.quota.Limit())
 	}
-	if len(notifier.releases) != 0 {
-		t.Errorf("expected 0 notifications, got %d", len(notifier.releases))
+	if releaseNotifications := outboxReleaseNotifications(t, dbConn); len(releaseNotifications) != 0 {
+		t.Errorf("expected 0 notifications, got %d", len(releaseNotifications))
 	}
 }
 
@@ -510,7 +536,7 @@ func TestProcessRepo_RepoETagCachedOn304(t *testing.T) {
 		}
 	})
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), &captureNotifier{})
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
 	// repo 304 → proceed to release check; confirm the ETag was sent
@@ -531,7 +557,7 @@ func TestProcessRepo_403_FreezesLimiter(t *testing.T) {
 		}
 	})
 
-	s := newScanner(dbConn, ghClient, nil, &captureNotifier{})
+	s := newScanner(dbConn, ghClient, nil)
 	s.processor.ProcessRepo(context.Background(), repo)
 
 	if s.quota.Limit() != 0 {
@@ -541,7 +567,6 @@ func TestProcessRepo_403_FreezesLimiter(t *testing.T) {
 
 func TestProcessRepo_OnlyActiveSubscriptionsNotified(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "golang", "go", "v1.21.0", "")
 
@@ -565,14 +590,15 @@ func TestProcessRepo_OnlyActiveSubscriptionsNotified(t *testing.T) {
 		http.StatusOK, http.StatusOK,
 	))
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
-	if len(notifier.releases) != 1 {
-		t.Fatalf("expected 1 notification (active only), got %d", len(notifier.releases))
+	releaseNotifications := outboxReleaseNotifications(t, dbConn)
+	if len(releaseNotifications) != 1 {
+		t.Fatalf("expected 1 notification (active only), got %d", len(releaseNotifications))
 	}
-	if notifier.releases[0].email != "active@example.com" {
-		t.Errorf("notification sent to %q, want active@example.com", notifier.releases[0].email)
+	if releaseNotifications[0].email != "active@example.com" {
+		t.Errorf("notification sent to %q, want active@example.com", releaseNotifications[0].email)
 	}
 }
 
@@ -592,7 +618,7 @@ func TestProcessRepo_StatusRestoredToIdleAfterProcessing(t *testing.T) {
 		http.StatusOK, http.StatusOK,
 	))
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), &captureNotifier{})
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo)
 
 	var updated db.Repository
@@ -614,7 +640,7 @@ func TestProduce_RateLimitLow_LimiterSetToZero(t *testing.T) {
 
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
-	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
+	s := newScanner(dbConn, ghClient, rlp)
 	s.producer.Produce(context.Background(), s.repoQueue)
 	s.producer.Produce(context.Background(), s.repoQueue)
 	s.producer.Produce(context.Background(), s.repoQueue)
@@ -640,7 +666,7 @@ func TestProduce_RateLimitHealthy_LimiterPositive(t *testing.T) {
 
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
-	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
+	s := newScanner(dbConn, ghClient, rlp)
 	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if s.quota.Limit() <= 0 {
@@ -660,7 +686,7 @@ func TestProduce_RetryAfterInFuture_LimiterFrozen(t *testing.T) {
 
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
-	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
+	s := newScanner(dbConn, ghClient, rlp)
 	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if s.quota.Limit() != 0 {
@@ -679,7 +705,7 @@ func TestProduce_RpsCapAt10(t *testing.T) {
 
 	_, ghClient, rlp := newGitHubServerWithRateLimits(t, func(w http.ResponseWriter, r *http.Request) {}, rl)
 
-	s := newScanner(dbConn, ghClient, rlp, &captureNotifier{})
+	s := newScanner(dbConn, ghClient, rlp)
 	s.producer.Produce(context.Background(), s.repoQueue)
 
 	if float64(s.quota.Limit()) > 5.0 {
@@ -689,20 +715,20 @@ func TestProduce_RpsCapAt10(t *testing.T) {
 
 func TestHandleNewRelease_NotifiesAllActiveSubscribers(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo := seedRepo(t, dbConn, 42, "torvalds", "linux", "v6.7", "")
 	seedSubscription(t, dbConn, repo.ID, "one@example.com")
 	seedSubscription(t, dbConn, repo.ID, "two@example.com")
 
-	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}))
 	p := s.processor.(*domainRepoProcessor)
-	p.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
+	outboxEvents := p.handleNewRelease(repo, &github.LatestRelease{TagName: "v6.8", URL: "https://github.com/torvalds/linux/releases/tag/v6.8"})
 
-	if len(notifier.releases) != 2 {
-		t.Fatalf("expected 2 notifications, got %d", len(notifier.releases))
+	if len(outboxEvents) != 2 {
+		t.Fatalf("expected 2 notifications, got %d", len(outboxEvents))
 	}
-	for _, c := range notifier.releases {
+	for _, ev := range outboxEvents {
+		c := decodeReleaseDetectedEnvelope(t, ev.Envelope)
 		if c.tagName != "v6.8" {
 			t.Errorf("notification tagName = %q, want v6.8", c.tagName)
 		}
@@ -725,7 +751,7 @@ func TestRecover_ResetsProcessingToIdle(t *testing.T) {
 		t.Fatalf("failed to update repo2 status: %v", err)
 	}
 
-	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}), &captureNotifier{})
+	s := newScanner(dbConn, github.NewClient(), github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.recover()
 
 	var updated1 db.Repository
@@ -766,7 +792,7 @@ func TestProduce_MultipleRepos_CorrectBatching(t *testing.T) {
 		MinInterval:      0,
 		ProducerInterval: 10 * time.Second,
 	}
-	s := NewScanner(dbConn, ghClient, &captureNotifier{}, rlp, cfg)
+	s := NewScanner(dbConn, ghClient, rlp, cfg)
 	s.quota.SetLimit(rate.Inf)
 
 	s.producer.Produce(context.Background(), s.repoQueue)
@@ -784,7 +810,6 @@ func TestProduce_MultipleRepos_CorrectBatching(t *testing.T) {
 
 func TestScanner_Integration_MultipleSubscribersDifferentRepos(t *testing.T) {
 	dbConn := getCleanDB(t)
-	notifier := &captureNotifier{}
 
 	repo1 := seedRepo(t, dbConn, 1, "org", "project-a", "v1.0.0", "")
 	repo2 := seedRepo(t, dbConn, 2, "org", "project-b", "v2.0.0", "")
@@ -827,16 +852,17 @@ func TestScanner_Integration_MultipleSubscribersDifferentRepos(t *testing.T) {
 		}
 	})
 
-	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}), notifier)
+	s := newScanner(dbConn, ghClient, github.NewRateLimitTransport(nil, github.RateLimits{}))
 	s.processor.ProcessRepo(context.Background(), repo1)
 	s.processor.ProcessRepo(context.Background(), repo2)
 
-	if len(notifier.releases) != 4 {
-		t.Fatalf("expected 4 notifications total, got %d", len(notifier.releases))
+	releaseNotifications := outboxReleaseNotifications(t, dbConn)
+	if len(releaseNotifications) != 4 {
+		t.Fatalf("expected 4 notifications total, got %d", len(releaseNotifications))
 	}
 
 	counts := map[string]int{}
-	for _, call := range notifier.releases {
+	for _, call := range releaseNotifications {
 		key := fmt.Sprintf("%s:%s:%s", call.email, call.name, call.tagName)
 		counts[key]++
 	}

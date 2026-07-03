@@ -1,4 +1,4 @@
-// Package redis provides Redis client and streaming functionalities.
+// Package redis provides a Redis client, response cache, and dedup store.
 package redis
 
 import (

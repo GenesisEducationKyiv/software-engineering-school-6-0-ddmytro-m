@@ -30,10 +30,10 @@ type Scanner struct {
 }
 
 // NewScanner creates a new Scanner instance.
-func NewScanner(orm *gorm.DB, ghClient *github.Client, notifier Notifier, rlp RateLimitProvider, config *config.ScannerConfig) *Scanner {
+func NewScanner(orm *gorm.DB, ghClient *github.Client, rlp RateLimitProvider, config *config.ScannerConfig) *Scanner {
 	store := NewRepositoryStore(orm)
 	quota := NewQuotaManager(rlp, config.SafetyBuffer)
-	processor := NewRepoProcessor(store, ghClient, notifier, quota)
+	processor := NewRepoProcessor(store, ghClient, quota)
 	producer := NewRepoProducer(store, quota, config.ProducerInterval, config.MinInterval)
 	workers := NewWorkerPool(processor, quota, config.Workers)
 

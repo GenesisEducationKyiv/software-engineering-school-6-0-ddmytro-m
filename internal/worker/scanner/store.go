@@ -7,15 +7,16 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
 )
 
 // RepositoryStore defines data access methods for the scanner.
 type RepositoryStore interface {
 	RecoverStuckRepos() error
 	ClaimIdle(batchSize int, minInterval time.Duration) ([]db.Repository, error)
-	UpdateScanStatus(repo *db.Repository) error
+	UpdateScanStatus(repo *db.Repository, events ...outbox.Event) error
 	GetActiveSubscriptions(repoID uint) ([]db.Subscription, error)
-	MarkMovedAndUnsubscribe(repo *db.Repository) error
+	MarkMovedAndUnsubscribe(repo *db.Repository, events ...outbox.Event) error
 }
 
 type gormStore struct {
@@ -68,15 +69,24 @@ func (s *gormStore) ClaimIdle(batchSize int, minInterval time.Duration) ([]db.Re
 	return repos, err
 }
 
-func (s *gormStore) UpdateScanStatus(repo *db.Repository) error {
-	return s.db.Model(repo).Updates(map[string]any{
+func (s *gormStore) UpdateScanStatus(repo *db.Repository, events ...outbox.Event) error {
+	updates := map[string]any{
 		"status":                 "idle",
 		"last_scanned_at":        time.Now(),
 		"e_tag":                  repo.ETag,
 		"last_release_github_id": repo.LastRelease.GitHubID,
 		"last_release_tag_name":  repo.LastRelease.TagName,
 		"last_release_e_tag":     repo.LastRelease.ETag,
-	}).Error
+	}
+	if len(events) == 0 {
+		return s.db.Model(repo).Updates(updates).Error
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(repo).Updates(updates).Error; err != nil {
+			return err
+		}
+		return outbox.InsertTx(tx, events...)
+	})
 }
 
 func (s *gormStore) GetActiveSubscriptions(repoID uint) ([]db.Subscription, error) {
@@ -85,11 +95,23 @@ func (s *gormStore) GetActiveSubscriptions(repoID uint) ([]db.Subscription, erro
 	return subs, err
 }
 
-func (s *gormStore) MarkMovedAndUnsubscribe(repo *db.Repository) error {
-	if err := s.db.Model(&db.Subscription{}).
+func (s *gormStore) MarkMovedAndUnsubscribe(repo *db.Repository, events ...outbox.Event) error {
+	if len(events) == 0 {
+		return s.markMovedAndUnsubscribe(s.db, repo)
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.markMovedAndUnsubscribe(tx, repo); err != nil {
+			return err
+		}
+		return outbox.InsertTx(tx, events...)
+	})
+}
+
+func (s *gormStore) markMovedAndUnsubscribe(tx *gorm.DB, repo *db.Repository) error {
+	if err := tx.Model(&db.Subscription{}).
 		Where("repository_id = ?", repo.ID).
 		Update("status", db.StatusUnsubscribed).Error; err != nil {
 		return err
 	}
-	return s.db.Delete(repo).Error
+	return tx.Delete(repo).Error
 }

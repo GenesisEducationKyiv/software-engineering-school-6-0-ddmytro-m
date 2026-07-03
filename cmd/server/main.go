@@ -13,9 +13,9 @@ import (
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/api/github"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/config"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/contract"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/db"
-	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/outbox"
+	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/rabbitmq"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/redis"
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/logger"
 
@@ -68,17 +68,30 @@ func main() {
 		github.WithHTTPClient(httpClient),
 	)
 
-	stream := redis.NewStream(redisClient, contract.DeliveryStream)
-	deliveryPublisher := mq.NewDeliveryPublisher(stream)
-	emailMQ := mq.NewEmailMQ(deliveryPublisher)
+	retryPolicy := rabbitmq.NewRetryPolicy(
+		time.Duration(cfg.RabbitMQ.RetryTTLSeconds)*time.Second,
+		cfg.RabbitMQ.RetryBackoffFactor,
+		cfg.RabbitMQ.MaxRetryAttempts,
+	)
+	rmqConn := rabbitmq.Dial(cfg.RabbitMQ.URL, retryPolicy)
+	defer func() {
+		if closeErr := rmqConn.Close(); closeErr != nil {
+			logger.Log.Error("error closing RabbitMQ connection", zap.Error(closeErr))
+		}
+	}()
 
-	scn := scanner.NewScanner(orm, ghClient, emailMQ, rateLimitTransport, &cfg.Scanner)
+	pub := rabbitmq.NewPublisher(rmqConn)
 
-	subStore := db.NewSubscriptionStore(orm)
-	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient, emailMQ)
+	scn := scanner.NewScanner(orm, ghClient, rateLimitTransport, &cfg.Scanner)
+
+	subStore := handlers.NewSubscriptionStore(orm)
+	subHandler := handlers.NewSubscriptionHandler(subStore, ghClient)
 	srv := transportHttp.NewServer(":8080", subHandler)
 
+	relay := outbox.NewRelay(orm, pub, cfg.Outbox.PollInterval, cfg.Outbox.BatchSize)
+
 	go scn.Start(ctx)
+	go relay.Run(ctx)
 	go func() {
 		if err := srv.Start(); err != nil {
 			logger.Log.Error("HTTP server error", zap.Error(err))
