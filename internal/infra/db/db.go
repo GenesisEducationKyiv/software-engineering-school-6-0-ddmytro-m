@@ -72,6 +72,9 @@ type Subscription struct {
 	APIToken     string `gorm:"column:api_token;index:idx_api_token,where:deleted_at IS NULL;size:32"`
 }
 
+// insert cap
+const createBatchSize = 1000
+
 var (
 	once     sync.Once
 	instance *gorm.DB
@@ -81,7 +84,9 @@ var (
 func Get() *gorm.DB {
 	once.Do(func() {
 		dsn := config.LoadDBDSN()
-		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+			CreateBatchSize: createBatchSize,
+		})
 		if err != nil {
 			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
