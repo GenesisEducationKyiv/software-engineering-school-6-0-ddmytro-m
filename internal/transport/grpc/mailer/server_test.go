@@ -37,8 +37,8 @@ func TestServerSend_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Send returned error: %v", err)
 	}
-	if !res.GetDelivered() {
-		t.Error("Delivered = false, want true")
+	if res.GetOutcome() != mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_DELIVERED {
+		t.Errorf("Outcome = %v, want DELIVERED", res.GetOutcome())
 	}
 	if len(f.got) != 1 || f.got[0].Event != mq.EventNewRelease {
 		t.Errorf("deliverer received %+v, want one new_release", f.got)
@@ -47,12 +47,12 @@ func TestServerSend_Success(t *testing.T) {
 
 func TestServerSend_FailureOutcomes(t *testing.T) {
 	cases := []struct {
-		name       string
-		err        error
-		wantReason string
+		name        string
+		err         error
+		wantOutcome mailerv1.DeliveryOutcome
 	}{
-		{"poison", workermailer.ErrUnknownEmailType, workermailer.OutcomePoison},
-		{"send failure", errors.New("smtp boom"), workermailer.OutcomeFailed},
+		{"poison", workermailer.ErrUnknownEmailType, mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_POISON},
+		{"send failure", errors.New("smtp boom"), mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_FAILED},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,11 +63,8 @@ func TestServerSend_FailureOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Send returned transport error: %v", err)
 			}
-			if res.GetDelivered() {
-				t.Error("Delivered = true, want false")
-			}
-			if res.GetReason() != tc.wantReason {
-				t.Errorf("Reason = %q, want %q", res.GetReason(), tc.wantReason)
+			if res.GetOutcome() != tc.wantOutcome {
+				t.Errorf("Outcome = %v, want %v", res.GetOutcome(), tc.wantOutcome)
 			}
 		})
 	}

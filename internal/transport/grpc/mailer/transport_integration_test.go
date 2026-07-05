@@ -111,8 +111,8 @@ func TestGRPC_SendStream_DeliversBatch(t *testing.T) {
 		if recvErr != nil {
 			t.Fatalf("stream recv: %v", recvErr)
 		}
-		if !res.GetDelivered() {
-			t.Errorf("result Delivered = false, reason %q", res.GetReason())
+		if res.GetOutcome() != mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_DELIVERED {
+			t.Errorf("result Outcome = %v, want DELIVERED", res.GetOutcome())
 		}
 	}
 	if err := stream.CloseSend(); err != nil {

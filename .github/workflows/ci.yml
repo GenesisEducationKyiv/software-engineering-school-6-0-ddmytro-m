@@ -32,6 +32,12 @@ jobs:
         with:
           go-version: "1.26.1"
 
+      - name: Generate protobuf code
+        run: |
+          make proto:tools
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make proto:gen
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -48,6 +54,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.1"
+
+      - name: Generate protobuf code
+        run: |
+          make proto:tools
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make proto:gen
 
       - name: Run unit tests
         run: make test:unit

@@ -19,9 +19,16 @@ message DeliveryCommand {
   map<string, string> payload = 5;
 }
 
+// mirrors internal/worker/mailer.Outcome*
+enum DeliveryOutcome {
+  DELIVERY_OUTCOME_UNSPECIFIED = 0;
+  DELIVERY_OUTCOME_DELIVERED = 1;
+  DELIVERY_OUTCOME_FAILED = 2;
+  DELIVERY_OUTCOME_POISON = 3;
+}
+
 message SendResult {
-  bool delivered = 1;
-  string reason = 2;
+  DeliveryOutcome outcome = 1;
 }
 
 service MailerService {

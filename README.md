@@ -33,6 +33,8 @@ Mailer runs as a separate service and consumes events from a Redis Streams MQ to
 Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV is development by default).
 ```shell
 go mod download
+make proto:tools  # install buf (once)
+make proto:gen    # generate gRPC stubs (required before building; not checked into the repo)
 make run          # server (scanner + HTTP)
 make run:mailer   # mailer (separate terminal)
 ```
