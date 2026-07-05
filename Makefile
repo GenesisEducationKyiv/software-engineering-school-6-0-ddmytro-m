@@ -32,7 +32,7 @@ docker\:test:
 	docker compose run --rm test
 
 
-.PHONY: run run\:server run\:mailer run\:notifier build build\:server build\:mailer build\:notifier test test\:all test\:unit test\:integration lint lint\:fix
+.PHONY: run run\:server run\:mailer run\:notifier build build\:server build\:mailer build\:notifier test test\:all test\:unit test\:integration test\:arch lint lint\:fix
 
 run: run\:server
 
@@ -80,6 +80,9 @@ test\:unit:
 
 test\:integration:
 	$(GO) test -v -tags="integration" ./...
+
+test\:arch:
+	$(GO) test -v -tags="unit" ./internal/archtest/...
 
 lint: .golangci.yml
 	golangci-lint run

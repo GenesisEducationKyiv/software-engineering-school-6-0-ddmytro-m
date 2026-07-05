@@ -1,5 +1,7 @@
 # System design
 
+See [`architecture.md`](architecture.md) for component, layering, and sequence diagrams of everything described below.
+
 ## 1. System Architecture
 
 The system is designed as **three independent microservices** with clearly demarcated domain boundaries. Services never call each other directly; all cross-service communication is asynchronous messaging over two channels with distinct semantics:
@@ -39,6 +41,8 @@ See [ADR 005](adr/005_rabbitmq_event_broker.md) for the events-vs-commands ratio
 ## 2. Modular Boundaries
 
 Each module exposes its behaviour through interfaces, not concrete types. Cross-cutting concerns are never shared by direct struct reference.
+
+Beyond per-module interfaces, the codebase is organized into five layers — `shared` < `infra` < `worker` < `transport` < `cmd` — where a package may depend only on its own layer or a lower one, and one `worker/<x>` service may never import another (they only communicate through the broker). This is enforced automatically by `internal/archtest` (see [`architecture.md`](architecture.md#2-layered-dependency-direction)), not just documented here.
 
 | Module | Interface | Implemented by |
 |--------|-----------|----------------|

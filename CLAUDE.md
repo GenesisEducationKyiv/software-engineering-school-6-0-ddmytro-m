@@ -17,6 +17,7 @@ make lint:fix         # golangci-lint run --fix
 
 make test:unit        # go test -v -tags="unit" ./...
 make test:integration # go test -v -tags="integration" ./...  (requires Docker)
+make test:arch        # go test -v -tags="unit" ./internal/archtest/...  (layered dependency direction)
 make test             # both unit + integration
 
 make docker:up        # docker compose --profile app up -d  (postgres, redis, rabbitmq, app, notifier, mailer)
@@ -102,10 +103,13 @@ Tests use build tags. Unit tests are self-contained; integration tests use **tes
 - `//go:build unit`
 - `//go:build integration`
 
+`internal/archtest` (tag `unit`) enforces the layered dependency direction (`shared < infra < worker < transport < cmd`) by parsing every non-test file's imports — a package may only import its own layer or lower, and one `worker/<x>` service may never import another. See `docs/architecture.md` for the diagram this test encodes.
+
 ## Documentation
 
 Architecture docs and ADRs are in `docs/`:
 - `docs/system_design.md` — high-level system design
+- `docs/architecture.md` — component, layering, and sequence diagrams
 - `docs/adr/` — Architecture Decision Records (ETags strategy, scanner design, Redis Streams for MQ, modular microservices, RabbitMQ event broker, orchestrated saga, gRPC mailer transport)
 
 ## Linting

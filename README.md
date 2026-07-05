@@ -102,6 +102,12 @@ full breakdown, including why stream latency isn't reported.
 ## Testing
 see [testing.md](testing.md)
 
+### Architecture tests
+```shell
+make test:arch
+```
+`internal/archtest` enforces the layered dependency direction (`shared < infra < worker < transport < cmd`) documented in [`docs/architecture.md`](docs/architecture.md#2-layered-dependency-direction) — a package may only import its own layer or lower, and worker services may not import one another.
+
 ## Linting
 ```shell
 make lint
