@@ -4,6 +4,7 @@ package mailer
 
 import (
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	workermailer "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
 	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/proto/mailer/v1"
 )
 
@@ -19,6 +20,22 @@ var protoToEvent = map[mailerv1.EmailType]mq.EventType{
 	mailerv1.EmailType_EMAIL_TYPE_NEW_RELEASE:        mq.EventNewRelease,
 	mailerv1.EmailType_EMAIL_TYPE_REPO_MOVED:         mq.EventRepoMoved,
 	mailerv1.EmailType_EMAIL_TYPE_EMAIL_VERIFICATION: mq.EventEmailVerification,
+}
+
+// outcomeToProto maps a workermailer outcome label to its gRPC response code.
+var outcomeToProto = map[string]mailerv1.DeliveryOutcome{
+	workermailer.OutcomeDelivered: mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_DELIVERED,
+	workermailer.OutcomeFailed:    mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_FAILED,
+	workermailer.OutcomePoison:    mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_POISON,
+}
+
+// protoToOutcome is the inverse of outcomeToProto. An unrecognized code (e.g.
+// DELIVERY_OUTCOME_UNSPECIFIED from an older peer) maps to OutcomeFailed so
+// the client retries rather than silently treating it as delivered.
+var protoToOutcome = map[mailerv1.DeliveryOutcome]string{
+	mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_DELIVERED: workermailer.OutcomeDelivered,
+	mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_FAILED:    workermailer.OutcomeFailed,
+	mailerv1.DeliveryOutcome_DELIVERY_OUTCOME_POISON:    workermailer.OutcomePoison,
 }
 
 // toProto converts a domain delivery message into a gRPC command.

@@ -56,7 +56,7 @@ func (s *Server) SendStream(stream mailerv1.MailerService_SendStreamServer) erro
 }
 
 // deliver runs one command through the Deliverer, records the transport metric,
-// and maps the outcome to a SendResult. Reason carries the non-PII outcome label.
+// and maps the outcome to a SendResult response code.
 func (s *Server) deliver(ctx context.Context, cmd *mailerv1.DeliveryCommand) *mailerv1.SendResult {
 	msg := fromProto(cmd)
 	start := time.Now()
@@ -66,7 +66,6 @@ func (s *Server) deliver(ctx context.Context, cmd *mailerv1.DeliveryCommand) *ma
 
 	if err != nil {
 		logger.Log.Debug("grpc delivery not completed", zap.String("outcome", outcome))
-		return &mailerv1.SendResult{Delivered: false, Reason: outcome}
 	}
-	return &mailerv1.SendResult{Delivered: true}
+	return &mailerv1.SendResult{Outcome: outcomeToProto[outcome]}
 }

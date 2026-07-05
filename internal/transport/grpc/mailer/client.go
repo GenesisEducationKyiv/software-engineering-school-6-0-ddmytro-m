@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/infra/mq"
+	workermailer "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/internal/worker/mailer"
 	mailerv1 "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-m/proto/mailer/v1"
 )
 
@@ -33,8 +34,9 @@ func (c *Client) Publish(ctx context.Context, cmd mq.DeliveryMessage) error {
 	if err != nil {
 		return err
 	}
-	if !res.GetDelivered() {
-		return errors.New("mailer did not deliver: " + res.GetReason())
+	outcome := protoToOutcome[res.GetOutcome()]
+	if outcome != workermailer.OutcomeDelivered {
+		return errors.New("mailer did not deliver: " + outcome)
 	}
 	return nil
 }

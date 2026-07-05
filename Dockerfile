@@ -7,6 +7,9 @@ RUN go mod download
 
 COPY . .
 
+RUN go install github.com/bufbuild/buf/cmd/buf@v1.50.0
+RUN buf generate
+
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/server cmd/server/main.go
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/mailer cmd/mailer/main.go
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/notifier cmd/notifier/main.go
