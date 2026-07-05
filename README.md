@@ -3,31 +3,32 @@ Test Case for Genesis & KMA Software Engineering School 6.0
 
 ## Architecture
 
-The system runs as **two independent microservices**:
+The system runs as **three independent microservices**:
 
 | Binary | Responsibility |
 |--------|----------------|
-| `cmd/server` | Subscription HTTP API + GitHub repository scanner |
-| `cmd/mailer` | Email delivery consumer (Redis Streams → SMTP) |
+| `cmd/server` | Subscription HTTP API + GitHub repository scanner; publishes domain events |
+| `cmd/notifier` | Notification policy consumer; emits email commands to the mailer |
+| `cmd/mailer` | Email delivery consumer (RabbitMQ → SMTP) |
 
-Services communicate exclusively through the `messages:delivery` Redis Stream. See [`docs/system_design.md`](docs/system_design.md) for the full design.
+Services communicate exclusively through **RabbitMQ topic exchanges**: `github_scanner.events` (domain events: `release.detected`, `repository.moved`, `subscription.created`) and `github_scanner.commands` (email work orders). The server also uses a transactional outbox pattern (see [`docs/adr/006_orchestrated_saga.md`](docs/adr/006_orchestrated_saga.md)) and runs an onboarding-saga orchestrator to guarantee reliable subscription setup. See [`docs/system_design.md`](docs/system_design.md) for the full design.
 
 ### Scanner
-Scanner optimizes amount of requests to ensure every repository is scanned in the shortest time possible (while also allowing new repositories to be added). It uses pessimistic approach to calculate **requests per seconds (rps)** for the next batch of repositories. Cached responses don't consume API tokens, so rps is increasing over time.
+The scanner is a quota-aware worker that identifies repositories due for a check and manages GitHub API quota. It optimizes requests per second (RPS) to scan all repositories as quickly as possible while respecting API limits and allowing new subscriptions to be added. Cached responses (via Redis) do not consume API tokens, so RPS increases over time. A safety buffer reserves quota for user-facing operations.
 
-Secondary limits are ommited by limiting max rps (but also handled correctly).
+### Notifier
+The notifier consumes domain events and applies notification policy, deciding which subscribers should receive email for each event. It publishes email commands to RabbitMQ and deduplicates by envelope ID (using Redis) to prevent duplicate emails on redelivery.
 
-Safety buffer is used to ensure new subscriptions may be added at any time.
-
-### Notifier / Mailer
-Mailer runs as a separate service and consumes events from a Redis Streams MQ to ensure messages are delivered reliably. If the mailer crashes, in-flight messages are reclaimed automatically on restart (`XAUTOCLAIM`).
+### Mailer
+The mailer consumes email commands from RabbitMQ and delivers them via SMTP with in-process exponential backoff, falling back to broker-level retry and dead-letter queues for durability.
 
 ## Features
 1. GitHub ETags are used to reduce API points usage (by a lot)
-2. **Redis** is used to cache any requests from GitHub API (except for getting current limits) and to use it's MQ
-3. `/subscriptions` and `/unsubscribe/:token` are protected by API Authorization Token provided in `X-API-TOKEN` header of `/confirm/:token` response.
-4. **GitHub CI** runs tests and lints the code
-5. **Prometheus** metrics
+2. **Redis** caches GitHub API responses and stores the notifier's deduplication keys
+3. **RabbitMQ** provides durable, at-least-once messaging with tiered retry and dead-letter queues
+4. `/subscriptions` and `/unsubscribe/:token` are protected by API Authorization Token provided in `X-Api-Token` header of `/confirm/:token` response
+5. **GitHub CI** runs tests and lints the code
+6. **Prometheus** metrics
 
 ## Launch
 Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV is development by default).
@@ -35,12 +36,13 @@ Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV i
 go mod download
 make proto:tools  # install buf (once)
 make proto:gen    # generate gRPC stubs (required before building; not checked into the repo)
-make run          # server (scanner + HTTP)
-make run:mailer   # mailer (separate terminal)
+make run          # server (scanner + HTTP) in terminal 1
+make run:notifier # notifier in terminal 2
+make run:mailer   # mailer in terminal 3
 ```
 
 ### Docker
-Starts postgres, redis, server, and mailer together:
+Starts postgres, redis, rabbitmq, server (app), notifier, and mailer together:
 ```shell
 make docker:up
 make docker:down

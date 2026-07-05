@@ -22,6 +22,8 @@ See [ADR 005](adr/005_rabbitmq_event_broker.md) for the events-vs-commands ratio
 ### Core Components (Server)
 - **API Server**: Handles user requests for subscriptions and verification. It secures sensitive endpoints using an API Authorization Token (X-API-TOKEN). The `SubscriptionHandler` depends on `SubscriptionRepository` and `RepoResolver` interfaces — no direct GORM or GitHub client coupling.
 - **Scanner (Background Worker)**: An adaptive engine that identifies repositories due for a check and manages GitHub API quota.
+- **Outbox Relay**: Polls a `outbox_rows` table for events queued transactionally by the API server and scanner, and publishes them to `github_scanner.events`, deleting each row only after a confirmed publish (see [ADR 006](adr/006_orchestrated_saga.md)).
+- **Onboarding Saga Orchestrator**: Consumes the mailer's verification-outcome events and settles the subscription-onboarding saga (complete or compensate); a periodic reaper compensates sagas left stuck by a lost event (see [ADR 006](adr/006_orchestrated_saga.md)).
 
 ### Core Component (Notifier)
 - **Notification Service (Event Consumer)**: The single home of notification policy. Consumes domain events from the RabbitMQ `notifications` queue, decides what notification each event warrants, and publishes `DeliveryMessage` commands to the `github_scanner.commands` exchange. Deduplicates events by envelope ID (at-least-once delivery implies duplicates), acks only after the command is durably published, and routes poison/exhausted messages to a dead-letter queue.
@@ -30,7 +32,7 @@ See [ADR 005](adr/005_rabbitmq_event_broker.md) for the events-vs-commands ratio
 - **Mailer (Background Worker)**: Consumes email commands from the RabbitMQ `email.delivery` queue and sends emails via SMTP, with in-process retry plus broker-level retry/DLQ.
 
 ### Storage & Infrastructure
-- **PostgreSQL/GORM**: Stores subscriptions, repository metadata (including ETags), and scan history.
+- **PostgreSQL/GORM**: Stores subscriptions, repository metadata (including ETags), scan history, pending outbox events (`outbox_rows`), and onboarding-saga state (`OnboardingSaga`).
 - **Redis**: A high-speed cache for GitHub API responses and the store for the Notifier's deduplication keys. (No longer a message queue.)
 - **RabbitMQ**: Two durable topic exchanges (events, commands) with publisher confirms, tiered exponential-backoff retry queues + dead-letter queues per consumer, and a management UI for queue observability.
 
@@ -40,14 +42,14 @@ Each module exposes its behaviour through interfaces, not concrete types. Cross-
 
 | Module | Interface | Implemented by |
 |--------|-----------|----------------|
-| `handlers` | `SubscriptionRepository` | `gormSubscriptionStore` in `handlers/store.go` |
+| `handlers` | `SubscriptionRepository` | `gormSubscriptionStore` in `handlers/store.go` (queues `outbox.Event`s transactionally) |
 | `handlers` | `RepoResolver` | `*github.Client` (structural — no wrapper needed) |
-| `handlers` | `EmailSender` | RabbitMQ-backed event publisher (`infra/rabbitmq`) |
-| `worker/scanner` | `RepositoryStore` | `gormStore` in `scanner/store.go` |
+| `worker/scanner` | `RepositoryStore` | `gormStore` in `scanner/store.go` (queues `outbox.Event`s transactionally) |
 | `worker/scanner` | `RepoProcessor` | `*processor` |
-| `worker/scanner` | `Notifier` | RabbitMQ-backed event publisher (`infra/rabbitmq`) |
 | `worker/notifier` | `CommandPublisher`, `DedupStore` | RabbitMQ command publisher + Redis `Dedup` |
 | `worker/mailer` | `EmailSender` | `*smtp.Client` (consumes the RabbitMQ command queue) |
+| `worker/orchestrator` | `Store` | `OnboardingSaga`-backed GORM store (`orchestrator/store.go`) |
+| `infra/outbox` | `Broker` | RabbitMQ publisher (`Relay.broker`) |
 
 ## 3. Functional Requirements
 
@@ -59,7 +61,8 @@ Each module exposes its behaviour through interfaces, not concrete types. Cross-
 - **FR6: Repository Relocation Handling**: The system must detect if a repository has been moved or renamed by comparing its unique GitHub ID against the stored value. If a mismatch occurs, it must notify subscribers and mark their subscriptions accordingly.
 - **FR7: Crash Recovery**: On startup, the scanner must automatically identify and reset the status of any repositories that were in a "processing" state, ensuring they can be scanned again in the next cycle.
 - **FR8: Selective Notifications**: Notifications are sent only to subscribers with an "active" status.
-- **FR9: Domain Event Publication**: The system must publish domain events (`release.detected`, `repository.moved`, `subscription.created`) to the message broker as facts, wrapped in a versioned envelope with a unique ID. The decision of what notification an event warrants belongs exclusively to the Notification service.
+- **FR9: Domain Event Publication**: The system must publish domain events (`release.detected`, `repository.moved`, `subscription.created`) to the message broker as facts, wrapped in a versioned envelope with a unique ID. Producers persist these events transactionally (the transactional outbox) rather than publishing them directly, so an event is never lost to a broker outage nor produced without its causing state change. The decision of what notification an event warrants belongs exclusively to the Notification service.
+- **FR10: Reliable Subscription Onboarding**: The system must guarantee that a new subscription ends in either a confirmed-deliverable state or a cleanly cancelled one — never a `pending` row with no path forward. This is implemented as an orchestrated saga (see [ADR 006](adr/006_orchestrated_saga.md)) that settles on the mailer's verification-outcome events, with a timeout-based reaper as a backstop against lost events.
 
 ## 4. Non-Functional Requirements
 
@@ -123,5 +126,17 @@ The notification pipeline has three stages — **detect facts → decide what to
 
 - Consumes the `email.delivery` queue (bound to `github_scanner.commands`) with manual acks and prefetch.
 - **In-process Exponential Backoff**: failed SMTP sends are first retried in-process with increasing delays.
-- **Broker Retry/DLQ**: once in-process retries are exhausted the command is handed back to the broker's tiered retry queues; after the tiers are exhausted it lands in `email.delivery.dlq`. Invalid/unknown commands are dead-lettered immediately.
+- **Broker Retry/DLQ**: once in-process retries are exhausted the command is handed back to the broker's tiered retry queues; after the tiers are exhausted it lands in `email.delivery.dlq`. Invalid/unknown commands are dead-lettered immediately — except a verification command, whose delivery outcome must reach the onboarding saga (see below), so it is acked terminally instead of parked in the DLQ.
 - **Crash Recovery**: a consumer crash leaves the in-flight command unacked, so RabbitMQ redelivers it to another consumer — no manual reclaim needed.
+- **Alternate transport**: the notifier → mailer hop can run over RabbitMQ (default) or gRPC (`NOTIFIER_DELIVERY_TRANSPORT=grpc`), unary or bidi-streaming. See [ADR 007](adr/007_grpc_mailer_transport.md) for the throughput trade-offs.
+
+## 7. Subscription Onboarding Saga
+
+The subscribe flow spans two services and an external system (SMTP) that no local transaction can cover: the server writes a `pending` `Subscription` row while the notifier and mailer must actually deliver a verification email. An orchestrated saga (owned by the server, detailed in [ADR 006](adr/006_orchestrated_saga.md)) reconciles the two:
+
+- **Start**: the subscription write, an `OnboardingSaga{token, awaiting_delivery}` row, and the `subscription.created` outbox event all commit in one local transaction, so the saga only exists once that transaction has durably committed.
+- **Settle**: the mailer reports the terminal outcome of the verification command as a domain event — `verification.delivered` or `verification.failed` — which the server's orchestrator consumes and uses to mark the saga `completed` or run compensation.
+- **Compensate (C1)**: on failure, the orchestrator soft-deletes the still-`pending` subscription so it does not linger unconfirmable forever; a user can simply re-subscribe.
+- **Reaper backstop**: a periodic sweep (`SAGA_REAPER_POLL_INTERVAL_SECONDS`) compensates any saga still `awaiting_delivery` after `SAGA_STALE_AFTER_SECONDS`, covering the case where a start or result event is itself lost.
+
+This gives the onboarding flow an eventually-consistent guarantee — `completed` or `compensated`, never a permanently half-finished `pending` row — without introducing 2PC or a shared transaction across services.
