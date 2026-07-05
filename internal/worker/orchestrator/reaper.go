@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.uber.org/zap"
@@ -41,15 +42,19 @@ func (r *Reaper) Run(ctx context.Context) {
 	}
 }
 
-func (r *Reaper) sweep(_ context.Context) {
-	tokens, err := r.store.StaleAwaitingTokens(r.staleAfter)
+func (r *Reaper) sweep(ctx context.Context) {
+	tokens, err := r.store.StaleAwaitingTokens(ctx, r.staleAfter)
 	if err != nil {
 		logger.Log.Error("saga reaper: query stale sagas failed", zap.Error(err))
 		return
 	}
 
 	for _, token := range tokens {
-		if err := r.store.Compensate(token); err != nil {
+		if err := r.store.Compensate(ctx, token); err != nil {
+			if errors.Is(err, ErrAlreadySettled) {
+				logger.Log.Info("saga reaper: saga completed before compensation, skipping", zap.String("token", token))
+				continue
+			}
 			logger.Log.Error("saga reaper: compensate failed", zap.String("token", token), zap.Error(err))
 			continue
 		}

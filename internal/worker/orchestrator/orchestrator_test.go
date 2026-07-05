@@ -39,7 +39,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{states: map[string]db.SagaState{}}
 }
 
-func (f *fakeStore) SagaState(token string) (db.SagaState, error) {
+func (f *fakeStore) SagaState(_ context.Context, token string) (db.SagaState, error) {
 	if f.lookupErr != nil {
 		return "", f.lookupErr
 	}
@@ -50,9 +50,15 @@ func (f *fakeStore) SagaState(token string) (db.SagaState, error) {
 	return st, nil
 }
 
-func (f *fakeStore) MarkCompleted(token string) error {
+// MarkCompleted mimics the real store's conditional update: it only
+// transitions a saga still awaiting_delivery, reporting ErrAlreadySettled
+// otherwise (e.g. a concurrent reaper compensation won the race).
+func (f *fakeStore) MarkCompleted(_ context.Context, token string) error {
 	if f.markErr != nil {
 		return f.markErr
+	}
+	if f.states[token] != db.SagaAwaitingDelivery {
+		return ErrAlreadySettled
 	}
 	f.completed = append(f.completed, token)
 	f.states[token] = db.SagaCompleted
@@ -61,13 +67,17 @@ func (f *fakeStore) MarkCompleted(token string) error {
 
 // Compensate mimics the atomic cancel-subscription + mark-compensated store
 // method: on failure, neither list is updated, matching the real
-// implementation's all-or-nothing transaction.
-func (f *fakeStore) Compensate(token string) error {
+// implementation's all-or-nothing transaction. Like MarkCompleted, it only
+// transitions a saga still awaiting_delivery.
+func (f *fakeStore) Compensate(_ context.Context, token string) error {
 	if f.compensateErr != nil {
 		return f.compensateErr
 	}
 	if f.compensateFailToken[token] {
 		return errors.New("compensate failed for " + token)
+	}
+	if f.states[token] != db.SagaAwaitingDelivery {
+		return ErrAlreadySettled
 	}
 	f.canceled = append(f.canceled, token)
 	f.compensated = append(f.compensated, token)
@@ -75,7 +85,7 @@ func (f *fakeStore) Compensate(token string) error {
 	return nil
 }
 
-func (f *fakeStore) StaleAwaitingTokens(_ time.Duration) ([]string, error) {
+func (f *fakeStore) StaleAwaitingTokens(_ context.Context, _ time.Duration) ([]string, error) {
 	if f.staleErr != nil {
 		return nil, f.staleErr
 	}
@@ -196,6 +206,54 @@ func TestProcess_CompensateFails_Retries(t *testing.T) {
 	}
 	if len(store.canceled) != 0 || len(store.compensated) != 0 {
 		t.Errorf("must not partially compensate on failure, got canceled=%v compensated=%v", store.canceled, store.compensated)
+	}
+}
+
+// raceStore flips a saga's state right after it's read via SagaState, to
+// simulate the other side of the saga (reaper vs. orchestrator) winning the
+// race in the window between claim's read and the settling write.
+type raceStore struct {
+	*fakeStore
+	raceTo db.SagaState
+}
+
+func (r *raceStore) SagaState(ctx context.Context, token string) (db.SagaState, error) {
+	state, err := r.fakeStore.SagaState(ctx, token)
+	if err == nil {
+		r.fakeStore.states[token] = r.raceTo
+	}
+	return state, err
+}
+
+func TestProcess_Delivered_RacedByReaperCompensation_Acks(t *testing.T) {
+	store := &raceStore{fakeStore: newFakeStore(), raceTo: db.SagaCompensated}
+	store.states["tok"] = db.SagaAwaitingDelivery
+	o := New(store)
+	s := &fakeSettler{}
+
+	o.process(context.Background(), resultBody(events.NewVerificationDelivered(events.VerificationDelivered{Token: "tok"})), s)
+
+	if !s.acked {
+		t.Fatalf("expected ack despite race, retry=%q dl=%q", s.retried, s.deadLettered)
+	}
+	if len(store.completed) != 0 {
+		t.Errorf("must not mark completed once the reaper compensated, got %v", store.completed)
+	}
+}
+
+func TestProcess_Failed_RacedByCompletion_Acks(t *testing.T) {
+	store := &raceStore{fakeStore: newFakeStore(), raceTo: db.SagaCompleted}
+	store.states["tok"] = db.SagaAwaitingDelivery
+	o := New(store)
+	s := &fakeSettler{}
+
+	o.process(context.Background(), resultBody(events.NewVerificationFailed(events.VerificationFailed{Token: "tok"})), s)
+
+	if !s.acked {
+		t.Fatalf("expected ack despite race, retry=%q dl=%q", s.retried, s.deadLettered)
+	}
+	if len(store.canceled) != 0 || len(store.compensated) != 0 {
+		t.Errorf("must not compensate once the saga completed, got canceled=%v compensated=%v", store.canceled, store.compensated)
 	}
 }
 
