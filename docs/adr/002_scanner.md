@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-We need a background process to monitor GitHub repositories for new releases. However, there are few challenges:
+We need a background process to monitor GitHub repositories for new releases. However, there are a few challenges:
 
 1. **GitHub API Rate Limits**: Primary limits (5,000 requests/hour for authenticated users) and secondary limits (concurrency) can lead to temporary bans.
 2. **Scalability**: As the number of tracked repositories grows, a sequential loop becomes too slow.
@@ -31,7 +31,7 @@ Instead of a fixed interval, the scanner dynamically adjusts its speed:
 
 - **Recovery Logic**: On startup, the scanner runs a recover() function to reset any repositories stuck in the processing state (likely due to a previous crash).
 - **Transactional Updates**: We use a DB transaction to "claim" a batch of repositories, moving them from idle to processing atomically to ensure no two worker instances process the same repo.
-- **Stale Data Handling**: If response from the server and recorded repo ids mismatch, users are notified that repo has been moved (and another repo took its place). Premature notifications are omitted to prevent notifications about visibility changes (and following unsubscriptions) 
+- **Stale Data Handling**: If the response from the server and the recorded repo ID mismatch, users are notified that the repo has been moved (and another repo took its place). Premature notifications are omitted to prevent notifications about visibility changes (and following unsubscriptions).
 
 ### Diagram
 ![Producer-Consumer diagram](../pictures/adr/002_producer_consumer.png)
