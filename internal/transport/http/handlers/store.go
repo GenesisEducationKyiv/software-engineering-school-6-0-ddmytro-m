@@ -85,20 +85,26 @@ func (s *gormSubscriptionStore) SaveSubscription(sub *db.Subscription, events ..
 	if len(events) == 0 {
 		return s.db.Save(sub).Error
 	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(sub).Error; err != nil {
-			return err
-		}
-		return outbox.InsertTx(tx, events...)
-	})
+	return s.writeSubscriptionTx(sub, events, func(tx *gorm.DB) error { return tx.Save(sub).Error })
 }
 
 func (s *gormSubscriptionStore) CreateSubscription(sub *db.Subscription, events ...outbox.Event) error {
 	if len(events) == 0 {
 		return s.db.Create(sub).Error
 	}
+	return s.writeSubscriptionTx(sub, events, func(tx *gorm.DB) error { return tx.Create(sub).Error })
+}
+
+// writeSubscriptionTx runs write, starts the onboarding saga that tracks this
+// confirm token's verification-email outcome, and queues the outbox events,
+// all in one transaction. They commit or roll back together, so a saga only
+// ever exists once the subscription write has durably committed.
+func (s *gormSubscriptionStore) writeSubscriptionTx(sub *db.Subscription, events []outbox.Event, write func(tx *gorm.DB) error) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(sub).Error; err != nil {
+		if err := write(tx); err != nil {
+			return err
+		}
+		if err := tx.Create(&db.OnboardingSaga{ConfirmToken: sub.ConfirmToken, State: db.SagaAwaitingDelivery}).Error; err != nil {
 			return err
 		}
 		return outbox.InsertTx(tx, events...)

@@ -50,7 +50,8 @@ func main() {
 		}
 	}()
 
-	mlr := mailer.New(smtpClient)
+	results := mailer.NewResultPublisher(rabbitmq.NewPublisher(conn))
+	mlr := mailer.New(smtpClient, results)
 	consumer := rabbitmq.NewConsumer(
 		conn,
 		rabbitmq.CommandsEndpoint.Queues,

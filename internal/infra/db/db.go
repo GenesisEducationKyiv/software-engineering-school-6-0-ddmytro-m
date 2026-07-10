@@ -72,6 +72,25 @@ type Subscription struct {
 	APIToken     string `gorm:"column:api_token;index:idx_api_token,where:deleted_at IS NULL;size:32"`
 }
 
+// SagaState represents the state of an onboarding saga.
+type SagaState string
+
+// Onboarding saga states.
+const (
+	SagaAwaitingDelivery SagaState = "awaiting_delivery"
+	SagaCompleted        SagaState = "completed"
+	SagaCompensated      SagaState = "compensated"
+)
+
+// OnboardingSaga is the persisted state of a subscription-onboarding saga,
+// correlated with its subscription by the confirm token (not PII).
+type OnboardingSaga struct {
+	gorm.Model
+
+	ConfirmToken string    `gorm:"uniqueIndex:idx_saga_confirm_token,where:deleted_at IS NULL;size:32"`
+	State        SagaState `gorm:"type:varchar(20);default:'awaiting_delivery';index"`
+}
+
 // insert cap
 const createBatchSize = 1000
 
@@ -91,7 +110,7 @@ func Get() *gorm.DB {
 			logger.Log.Fatal("failed to connect to database", zap.Error(err))
 		}
 
-		err = db.AutoMigrate(&Repository{}, &Subscription{}, &outbox.Row{})
+		err = db.AutoMigrate(&Repository{}, &Subscription{}, &outbox.Row{}, &OnboardingSaga{})
 		if err != nil {
 			logger.Log.Fatal("failed to migrate database", zap.Error(err))
 		}

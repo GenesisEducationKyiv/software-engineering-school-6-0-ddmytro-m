@@ -86,7 +86,7 @@ func startMailer(ctx context.Context, t *testing.T, sender EmailSender) (*rabbit
 	conn := rabbitmq.Dial(testAMQPURL, retry)
 	purgeQueues(t, conn)
 
-	consumer := rabbitmq.NewConsumer(conn, rabbitmq.CommandsEndpoint.Queues, 1, retry, New(sender).Handler())
+	consumer := rabbitmq.NewConsumer(conn, rabbitmq.CommandsEndpoint.Queues, 1, retry, New(sender, nil).Handler())
 	go consumer.Start(ctx)
 
 	return conn, rabbitmq.NewPublisher(conn)

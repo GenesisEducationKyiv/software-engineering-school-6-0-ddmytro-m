@@ -9,6 +9,7 @@ type ServerConfig struct {
 	Redis    RedisConfig
 	RabbitMQ RabbitMQConfig
 	Outbox   OutboxConfig
+	Saga     SagaReaperConfig
 }
 
 // LoadServerConfig reads all env vars required by the server service.
@@ -21,5 +22,6 @@ func LoadServerConfig() ServerConfig {
 		Redis:    LoadRedisConfig(),
 		RabbitMQ: LoadRabbitMQConfig(),
 		Outbox:   LoadOutboxConfig(),
+		Saga:     LoadSagaReaperConfig(),
 	}
 }

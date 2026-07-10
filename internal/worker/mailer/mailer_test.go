@@ -66,7 +66,7 @@ func (s *fakeSettler) Retry(_ context.Context, r string)      { s.retried = r }
 func (s *fakeSettler) DeadLetter(_ context.Context, r string) { s.deadLettered = r }
 
 func newMailer(sender EmailSender) *Mailer {
-	m := New(sender)
+	m := New(sender, nil)
 	m.baseBackoff = 0 // no waiting between retries in tests
 	return m
 }
