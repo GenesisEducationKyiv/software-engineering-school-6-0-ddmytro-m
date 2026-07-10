@@ -38,16 +38,34 @@ func hasPathPrefix(rel, prefix string) bool {
 	return rel == prefix || strings.HasPrefix(rel, prefix+"/")
 }
 
+// sharedDirs are exact-match directories (not prefixes) that sit below
+// every layer and may be imported from anywhere.
+var sharedDirs = map[string]bool{
+	"internal/logger":  true,
+	"internal/utils":   true,
+	"internal/config":  true,
+	"internal/events":  true,
+	"internal/metrics": true,
+}
+
+// ignoredDirs are package directories intentionally outside the layered
+// graph — currently just this test package. TestLayerDependencyDirection
+// fails on any other directory layerOf can't classify, so a newly added
+// directory forces layerOf (or this list) to be updated instead of going
+// unchecked.
+var ignoredDirs = map[string]bool{
+	"internal/archtest": true,
+}
+
 // layerOf classifies a module-relative package directory (e.g.
 // "internal/worker/scanner") into one of the layers above. For the worker
 // layer it also returns the specific service name ("scanner", "notifier",
 // ...) so sibling worker imports can be flagged separately from rank
-// violations. ok is false for anything not part of the layered graph
-// (e.g. this package itself, or generated proto stubs).
+// violations. ok is false for anything not part of the layered graph; see
+// ignoredDirs for the directories where that's expected.
 func layerOf(rel string) (layer, service string, ok bool) {
 	switch {
-	case rel == "internal/logger", rel == "internal/utils", rel == "internal/config",
-		rel == "internal/events", rel == "internal/metrics":
+	case sharedDirs[rel]:
 		return "shared", "", true
 	case hasPathPrefix(rel, "internal/infra"), hasPathPrefix(rel, "internal/api"):
 		return "infra", "", true
@@ -96,6 +114,9 @@ func TestLayerDependencyDirection(t *testing.T) {
 			relDir = filepath.ToSlash(relDir)
 			fromLayer, fromService, ok := layerOf(relDir)
 			if !ok {
+				if !ignoredDirs[relDir] {
+					t.Errorf("%s: not classified by layerOf — add it to a layer, or to ignoredDirs if it's intentionally outside the layered graph", relDir)
+				}
 				return nil
 			}
 			filesScanned++
@@ -107,11 +128,15 @@ func TestLayerDependencyDirection(t *testing.T) {
 			for _, imp := range f.Imports {
 				importPath := strings.Trim(imp.Path.Value, `"`)
 				if !strings.HasPrefix(importPath, modulePath+"/") {
-					continue // stdlib, third-party, or generated proto stubs
+					continue // stdlib or third-party
 				}
 				rel := strings.TrimPrefix(importPath, modulePath+"/")
 				toLayer, toService, toOK := layerOf(rel)
 				if !toOK {
+					// Unlike the fromLayer check above, an unclassified import
+					// target isn't an error: it's a legitimate in-module
+					// package outside internal/ and cmd/ (e.g. generated
+					// proto stubs under proto/), not a gap in layerOf.
 					continue
 				}
 				edgesChecked++
