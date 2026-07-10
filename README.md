@@ -33,6 +33,8 @@ Mailer runs as a separate service and consumes events from a Redis Streams MQ to
 Ensure that env variables are present in the .env or .env.\*APP_ENV\* (APP_ENV is development by default).
 ```shell
 go mod download
+make proto:tools  # install buf (once)
+make proto:gen    # generate gRPC stubs (required before building; not checked into the repo)
 make run          # server (scanner + HTTP)
 make run:mailer   # mailer (separate terminal)
 ```
@@ -44,6 +46,56 @@ make docker:up
 make docker:down
 make docker:logs
 ```
+
+## Load testing
+
+`cmd/loadtest` is a throughput harness that drives a fixed number of email
+delivery commands through the notifier → mailer transport against a **no-op
+email sender**, so the numbers reflect transport overhead rather than SMTP
+latency. It supports three modes:
+
+| Transport | Description |
+|-----------|-------------|
+| `grpc` (unary) | one `Send` RPC per command; reports throughput + p50/p99 latency |
+| `grpc -stream` | a single bidi `SendStream` RPC |
+| `amqp` | publishes a batch to the broker and drains it through a real mailer consumer |
+
+The AMQP mode declares its **own ephemeral, exclusive queue** (bound to the
+commands exchange with a per-process routing key) so it drains its own batch
+instead of competing with a running `cmd/mailer` on the shared `email.delivery`
+queue. The `amqp` mode therefore needs a reachable RabbitMQ (`make docker:up`).
+
+```shell
+make bench:grpc          # go run cmd/loadtest/main.go -transport grpc
+make bench:grpc-stream   # ... -transport grpc -stream
+make bench:amqp          # ... -transport amqp   (needs RabbitMQ)
+# flags: -n <count> (default 10000), -warmup <count> (default 1000, capped at n/10),
+#        -rabbitmq-url <url>
+```
+
+Each run sends a warm-up batch first (untimed) so cold connection setup and
+HTTP/2 window ramp-up don't land inside the measured numbers.
+
+### Results
+
+`n=20000`, `warmup=1000` (see [`loadtest-results.log`](loadtest-results.log) for
+the exact figures and the CPU model/core count they were measured on):
+
+| Transport | Throughput | p50 latency |
+|-----------|------------|-------------|
+| amqp                        | ~1k msg/s   | - |
+| grpc-unary                  | ~4.3k msg/s | ~200µs |
+| grpc-stream (pipelined)     | ~130k msg/s | not meaningful, see ADR 007 |
+
+gRPC unary beats AMQP because AMQP publishing opens, confirms on, and closes a
+fresh channel per message (each a synchronous round trip to the broker) on top
+of durable delivery, while unary reuses one connection and only pays HTTP/2
+per-call framing. The bidi stream is ~30x faster than unary because the
+harness pipelines sends and receives on separate goroutines instead of
+blocking on each response before sending the next - the actual advantage bidi
+streaming has over unary calls. See
+[ADR 007](docs/adr/007_grpc_mailer_transport.md#measuring-throughput) for the
+full breakdown, including why stream latency isn't reported.
 
 ## Testing
 see [testing.md](testing.md)
