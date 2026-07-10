@@ -33,9 +33,6 @@ go.work.sum
 # .idea/
 .vscode/
 
-# Generated protobuf code (run `make proto:gen`)
-proto/**/*.pb.go
-
 # Dist
 bin/
 server
