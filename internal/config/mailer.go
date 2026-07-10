@@ -9,6 +9,8 @@ type MailerConfig struct {
 	RabbitMQ      RabbitMQConfig
 	Workers       int
 	PrefetchCount int
+	GRPCEnabled   bool
+	GRPCAddr      string
 }
 
 // LoadMailerConfig reads all env vars required by the mailer service.
@@ -19,5 +21,7 @@ func LoadMailerConfig() MailerConfig {
 		RabbitMQ:      LoadRabbitMQConfig(),
 		Workers:       utils.GetEnvAs("MAILER_WORKERS", 3),
 		PrefetchCount: utils.GetEnvAs("MAILER_PREFETCH_COUNT", 10),
+		GRPCEnabled:   utils.GetEnvAs("MAILER_GRPC_ENABLED", true),
+		GRPCAddr:      utils.GetEnv("MAILER_GRPC_ADDR", ":9090"),
 	}
 }

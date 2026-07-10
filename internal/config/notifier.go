@@ -5,21 +5,25 @@ import "github.com/GenesisEducationKyiv/software-engineering-school-6-0-ddmytro-
 // NotifierConfig holds all configuration for the notifier service.
 type NotifierConfig struct {
 	Config
-	RabbitMQ      RabbitMQConfig
-	Redis         RedisConfig
-	Workers       int
-	PrefetchCount int
-	DedupTTLHours int
+	RabbitMQ          RabbitMQConfig
+	Redis             RedisConfig
+	Workers           int
+	PrefetchCount     int
+	DedupTTLHours     int
+	DeliveryTransport string
+	MailerGRPCAddr    string
 }
 
 // LoadNotifierConfig reads all env vars required by the notifier service.
 func LoadNotifierConfig() NotifierConfig {
 	return NotifierConfig{
-		Config:        loadBaseConfig(),
-		RabbitMQ:      LoadRabbitMQConfig(),
-		Redis:         LoadRedisConfig(),
-		Workers:       utils.GetEnvAs("NOTIFIER_WORKERS", 3),
-		PrefetchCount: utils.GetEnvAs("NOTIFIER_PREFETCH_COUNT", 10),
-		DedupTTLHours: utils.GetEnvAs("NOTIFIER_DEDUP_TTL_HOURS", 24),
+		Config:            loadBaseConfig(),
+		RabbitMQ:          LoadRabbitMQConfig(),
+		Redis:             LoadRedisConfig(),
+		Workers:           utils.GetEnvAs("NOTIFIER_WORKERS", 3),
+		PrefetchCount:     utils.GetEnvAs("NOTIFIER_PREFETCH_COUNT", 10),
+		DedupTTLHours:     utils.GetEnvAs("NOTIFIER_DEDUP_TTL_HOURS", 24),
+		DeliveryTransport: utils.GetEnv("NOTIFIER_DELIVERY_TRANSPORT", "amqp"),
+		MailerGRPCAddr:    utils.GetEnv("MAILER_GRPC_ADDR", "localhost:9090"),
 	}
 }

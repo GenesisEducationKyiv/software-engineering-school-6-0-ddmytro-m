@@ -96,6 +96,30 @@ func (c *Connection) watchAndReconnect() {
 	}
 }
 
+// DeclareEphemeralQueue declares a non-durable, exclusive, auto-deleting queue
+// bound to exchange via routingKey. It is meant for isolated one-off consumers
+// (e.g. the load harness): the queue is owned by this connection and removed
+// when it closes, so it never competes with the service queues for messages.
+func (c *Connection) DeclareEphemeralQueue(exchange, queue, routingKey string) error {
+	ch, err := c.Channel()
+	if err != nil {
+		return fmt.Errorf("ephemeral queue: open channel: %w", err)
+	}
+	defer func() {
+		if closeErr := ch.Close(); closeErr != nil {
+			logger.Log.Error("rabbitmq: error closing ephemeral queue channel", zap.Error(closeErr))
+		}
+	}()
+
+	if _, err = ch.QueueDeclare(queue, false, true, true, false, nil); err != nil {
+		return fmt.Errorf("ephemeral queue: declare %s: %w", queue, err)
+	}
+	if err = ch.QueueBind(queue, routingKey, exchange, false, nil); err != nil {
+		return fmt.Errorf("ephemeral queue: bind %s to %s: %w", queue, exchange, err)
+	}
+	return nil
+}
+
 // Channel opens a new AMQP channel on the current connection.
 func (c *Connection) Channel() (*amqp.Channel, error) {
 	c.mu.RLock()
